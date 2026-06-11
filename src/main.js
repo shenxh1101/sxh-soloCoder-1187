@@ -4,7 +4,7 @@ import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { createPrinterModel } from './printer.js';
 import { sliceModel, generateSupports } from './slicer.js';
 import { createPresetModel } from './presets.js';
-import { initUI, updateProgressUI, updateStatus, updateButtonStates, updateRemainingTime, setExportProgress, updatePhaseStatus, updateTimelineMax, updateTimelineValue, updateTimelineInfo } from './ui.js';
+import { initUI, updateProgressUI, updateStatus, updateButtonStates, updateRemainingTime, setExportProgress, updatePhaseStatus, updateTimelineMax, updateTimelineValue, updateTimelineInfo, updateInspectStats } from './ui.js';
 import { runExport } from './export.js';
 
 const viewport = document.getElementById('viewport');
@@ -102,35 +102,37 @@ let animationId = null;
 let printSpeed = 1.0;
 let animationStartTime = 0;
 let perLayerAnimDuration = 0.4;
+let printStartTime = 0;
+let printEndTime = 0;
+let currentModelName = '';
 
 let currentGeometry = null;
 let currentMesh = null;
 let modelClones = [];
 let modelHeight = 0;
 let layerHeight = 0.2;
+let exposureTime = 2.5;
+
+let layerPhaseLog = [];
 
 let inspectState = {
     active: false,
     cutHeight: 0,
     viewMode: 'model',
-    clippingPlane: null,
 };
 
 function clearModelGroups() {
     while (modelGroup.children.length > 0) {
-        const child = modelGroup.children[0];
-        disposeObject(child);
-        modelGroup.remove(child);
+        disposeObject(modelGroup.children[0]);
+        modelGroup.remove(modelGroup.children[0]);
     }
     while (layerVisualGroup.children.length > 0) {
-        const child = layerVisualGroup.children[0];
-        disposeObject(child);
-        layerVisualGroup.remove(child);
+        disposeObject(layerVisualGroup.children[0]);
+        layerVisualGroup.remove(layerVisualGroup.children[0]);
     }
     while (supportGroup.children.length > 0) {
-        const child = supportGroup.children[0];
-        disposeObject(child);
-        supportGroup.remove(child);
+        disposeObject(supportGroup.children[0]);
+        supportGroup.remove(supportGroup.children[0]);
     }
     modelClones.forEach(obj => disposeObject(obj));
     modelClones = [];
@@ -142,6 +144,7 @@ function clearModelGroups() {
     currentMesh = null;
     animState.currentLayer = 0;
     animState.previewLayer = -1;
+    layerPhaseLog = [];
 }
 
 function disposeObject(obj) {
@@ -173,6 +176,7 @@ function resetPrint() {
     updateTimelineMax(0);
     updateTimelineValue(0);
     updateTimelineInfo('');
+    updateInspectStats('', '', '');
     printState = 'idle';
     animState.isPaused = false;
     animState.pauseResolve = null;
@@ -182,12 +186,17 @@ function resetPrint() {
     animState.previewLayer = -1;
     printer.setAnimState(animState);
     exitInspectionMode();
+    printStartTime = 0;
+    printEndTime = 0;
+    currentModelName = '';
 }
 
-async function loadModel(geometry) {
+async function loadModel(geometry, modelName) {
     resetPrint();
 
     layerHeight = parseFloat(document.getElementById('layer-height').value) || 0.2;
+    exposureTime = parseFloat(document.getElementById('exposure-time').value) || 2.5;
+    currentModelName = modelName || '自定义模型';
 
     geometry.computeBoundingBox();
     geometry.center();
@@ -399,7 +408,7 @@ async function startPrint() {
         const preset = document.querySelector('.preset-item.active');
         const presetName = preset ? preset.dataset.preset : 'gear';
         const geom = createPresetModel(presetName);
-        await loadModel(geom);
+        await loadModel(geom, presetName);
     }
 
     exitInspectionMode();
@@ -417,26 +426,28 @@ async function runPrintAnimation() {
     animState.stopRequested = false;
     animState.currentLayer = 0;
     animState.previewLayer = -1;
+    layerPhaseLog = [];
     updateStatus('printing');
     updateButtonStates('printing');
     updateTimelineMax(totalLayers);
     updateTimelineValue(0);
     updateTimelineInfo('');
-    animationStartTime = performance.now();
+    printStartTime = performance.now();
+    animationStartTime = printStartTime;
 
     updatePhaseStatus('lowering');
+    logPhase('lowering');
     const lowered = await printer.lowerPlatform();
     if (animState.stopRequested || !lowered) {
         handleAnimationStop();
         return;
     }
 
-    const exposureTime = parseFloat(document.getElementById('exposure-time').value) || 2.5;
-
     for (let layer = 0; layer < totalLayers; layer++) {
         if (animState.stopRequested) break;
 
         updatePhaseStatus('lifting');
+        logPhase('lifting');
         const lifted = await printer.raiseOneLayer();
         if (animState.stopRequested || !lifted) break;
 
@@ -444,6 +455,7 @@ async function runPrintAnimation() {
         if (animState.stopRequested) break;
 
         updatePhaseStatus('exposure');
+        logPhase('exposure');
         const revealY = (layer + 1) * printer.currentLayerHeight;
         setModelClipping(revealY);
         showLayerVisual(layer);
@@ -480,6 +492,7 @@ async function runPrintAnimation() {
         if (animState.stopRequested) break;
 
         updatePhaseStatus('retraction');
+        logPhase('retraction');
         await delay(perLayerAnimDuration / printSpeed);
 
         await checkPause();
@@ -497,6 +510,7 @@ async function runPrintAnimation() {
     clearModelClipping();
     hideAllLayerVisuals();
 
+    printEndTime = performance.now();
     printState = 'complete';
     animState.currentPhase = 'complete';
     updateStatus('complete');
@@ -507,6 +521,24 @@ async function runPrintAnimation() {
     updateTimelineMax(totalLayers);
     updateTimelineValue(totalLayers);
     updateTimelineInfo('点击"成品检查"查看内部结构');
+}
+
+function logPhase(phase) {
+    layerPhaseLog.push({
+        layer: currentLayer,
+        phase,
+        timestamp: performance.now(),
+    });
+}
+
+function getPhaseAtLayer(layerIdx) {
+    if (layerIdx <= 0) return 'lowering';
+    const entries = layerPhaseLog.filter(e => e.layer === layerIdx);
+    if (entries.length === 0) {
+        const prev = layerPhaseLog.filter(e => e.layer < layerIdx);
+        return prev.length > 0 ? prev[prev.length - 1].phase : 'exposure';
+    }
+    return entries[entries.length - 1].phase;
 }
 
 function handleAnimationStop() {
@@ -598,15 +630,24 @@ function previewLayer(layerIndex) {
         : `${Math.floor(remaining / 60)}m ${Math.round(remaining % 60)}s`;
 
     const layerHeightMm = (idx * printer.currentLayerHeight).toFixed(2);
+    const phase = getPhaseAtLayer(idx);
+    const phaseLabel = {
+        lowering: '下降',
+        lifting: '抬升',
+        exposure: '曝光',
+        retraction: '回落',
+    }[phase] || phase;
 
     const progress = totalLayers > 0 ? Math.round((idx / totalLayers) * 100) : 0;
     updateProgressUI(progress, idx, totalLayers);
     updateRemainingTime(remainingStr);
     updateTimelineValue(idx);
 
-    const info = `层 ${idx}/${currentLayer} | 高度 ${layerHeightMm}mm | 已用 ${elapsedStr} | 剩余 ${remainingStr}`;
-    updateTimelineInfo(info);
-    updateStatus('paused', `预览第 ${idx} 层（实际已打印 ${currentLayer} 层）`);
+    const info = `层 ${idx}/${currentLayer} | 高度 ${layerHeightMm}mm | 当前阶段: ${phaseLabel}`;
+    const info2 = `已用 ${elapsedStr} | 剩余 ${remainingStr}`;
+    updateTimelineInfo(info + '\n' + info2);
+    updatePhaseStatus(phase);
+    updateStatus('paused', `预览第 ${idx} 层（实际 ${currentLayer} 层）| 阶段: ${phaseLabel}`);
 }
 
 function restoreFromPreview() {
@@ -635,6 +676,7 @@ function restoreFromPreview() {
     updateProgressUI(progress, currentLayer, totalLayers);
     updateRemainingTime(remainingStr);
     updateStatus('paused');
+    updatePhaseStatus('paused');
     updateTimelineValue(currentLayer);
     updateTimelineInfo('拖动滑块预览已打印层');
 }
@@ -653,11 +695,11 @@ function enterInspectionMode() {
 
     showAllLayerVisuals();
     modelGroup.visible = true;
-    layerVisualGroup.visible = true;
+    layerVisualGroup.visible = false;
     supportGroup.visible = false;
 
     updateButtonStates('inspect');
-    updateStatus('complete', '成品检查模式 - 拖动剖切滑块查看内部');
+    updateStatus('complete', '质检台 - 拖动剖切滑块查看内部');
     updateInspectUI();
 }
 
@@ -680,6 +722,7 @@ function exitInspectionMode() {
         updateButtonStates('complete');
         updateStatus('complete');
     }
+    updateInspectStats('', '', '');
 }
 
 function setInspectionCut(normalizedHeight) {
@@ -696,7 +739,61 @@ function setInspectionCut(normalizedHeight) {
         currentMesh.material.needsUpdate = true;
     }
 
+    computeInspectionStats(cutY);
     updateInspectUI();
+}
+
+function computeInspectionStats(cutY) {
+    let layerIdx = -1;
+    let minDist = Infinity;
+    for (let i = 0; i < slicedLayers.length; i++) {
+        const dist = Math.abs(slicedLayers[i].height - cutY);
+        if (dist < minDist) {
+            minDist = dist;
+            layerIdx = i;
+        }
+    }
+
+    if (layerIdx < 0 || layerIdx >= slicedLayers.length) {
+        updateInspectStats('--', '--', '--');
+        return;
+    }
+
+    const layer = slicedLayers[layerIdx];
+
+    let totalArea = 0;
+    layer.loops.forEach(loopData => {
+        const outerArea = Math.abs(polygonAreaXZ(loopData.outer));
+        let holeArea = 0;
+        if (loopData.holes) {
+            loopData.holes.forEach(hole => {
+                holeArea += Math.abs(polygonAreaXZ(hole));
+            });
+        }
+        totalArea += Math.max(0, outerArea - holeArea);
+    });
+
+    const holeCount = layer.holes ? layer.holes.length : 0;
+
+    const supportContacts = supports.filter(s => {
+        return Math.abs(s.top.y - cutY) < layerHeight * 2;
+    }).length;
+
+    const areaStr = totalArea > 0 ? `${(totalArea * 100).toFixed(1)} mm²` : '--';
+    const holeStr = `${holeCount} 个`;
+    const supportStr = `${supportContacts} 个触点`;
+
+    updateInspectStats(areaStr, holeStr, supportStr);
+}
+
+function polygonAreaXZ(loop) {
+    if (loop.length < 3) return 0;
+    let area = 0;
+    for (let i = 0; i < loop.length - 1; i++) {
+        const j = i + 1;
+        area += loop[i].x * loop[j].y - loop[j].x * loop[i].y;
+    }
+    return area / 2;
 }
 
 function setInspectViewMode(mode) {
@@ -732,7 +829,113 @@ function setInspectViewMode(mode) {
 function updateInspectUI() {
     const cutMm = inspectState.cutHeight.toFixed(2);
     const normalized = modelHeight > 0 ? Math.round((inspectState.cutHeight / modelHeight) * 100) : 50;
-    updateStatus('complete', `剖切高度: ${cutMm}mm (${normalized}%) | 视图: ${inspectState.viewMode}`);
+    const label = document.getElementById('inspect-cut-label');
+    if (label) label.textContent = `${normalized}% (${cutMm}mm)`;
+    updateStatus('complete', `质检台 | 剖切 ${cutMm}mm | 视图: ${inspectState.viewMode}`);
+}
+
+function generateReport() {
+    if (printState !== 'complete') {
+        alert('请等待打印完成后再生成报告');
+        return;
+    }
+
+    const totalElapsed = (printEndTime - printStartTime) / 1000;
+    const totalTimeStr = totalElapsed < 60
+        ? `${Math.round(totalElapsed)}s`
+        : `${Math.floor(totalElapsed / 60)}m ${Math.round(totalElapsed % 60)}s`;
+
+    const supportCount = supports.length;
+    const overhangRatio = supportCount > 0 ? '中等' : '低';
+    let riskLevel = '低';
+    let riskNote = '模型结构稳定，打印成功率较高。';
+    if (supportCount > 20) {
+        riskLevel = '中';
+        riskNote = '存在较多悬垂区域，建议检查支撑是否充分。';
+    }
+    if (supportCount > 50) {
+        riskLevel = '高';
+        riskNote = '大量悬垂区域，强烈建议增加支撑密度或调整模型方向。';
+    }
+    if (totalLayers > 500) {
+        riskLevel = riskLevel === '低' ? '中' : riskLevel;
+        riskNote += ' 层数较多，建议使用高质量树脂并注意温度控制。';
+    }
+
+    const now = new Date().toLocaleString('zh-CN');
+
+    const reportHTML = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>3D打印结果报告</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;background:#0d1117;color:#c9d1d9;padding:40px;max-width:800px;margin:auto;}
+h1{color:#58a6ff;font-size:24px;margin-bottom:8px;border-bottom:2px solid #30363d;padding-bottom:12px;}
+h2{color:#8b949e;font-size:14px;font-weight:400;margin-bottom:24px;}
+h3{color:#58a6ff;font-size:16px;margin:24px 0 12px;border-bottom:1px solid #21262d;padding-bottom:8px;}
+.card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:20px;margin-bottom:16px;}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+.item{background:#0d1117;border:1px solid #21262d;border-radius:6px;padding:12px;}
+.item-label{font-size:11px;color:#8b949e;margin-bottom:4px;}
+.item-value{font-size:18px;font-weight:600;color:#58a6ff;}
+.risk-low{color:#3fb950;}
+.risk-mid{color:#d29922;}
+.risk-high{color:#f85149;}
+.risk-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-weight:600;font-size:12px;}
+.risk-low-bg{background:rgba(63,185,80,0.15);color:#3fb950;}
+.risk-mid-bg{background:rgba(210,153,34,0.15);color:#d29922;}
+.risk-high-bg{background:rgba(248,81,73,0.15);color:#f85149;}
+.note{background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:12px;margin-top:12px;font-size:13px;line-height:1.6;}
+.footer{text-align:center;color:#484f58;font-size:11px;margin-top:32px;padding-top:16px;border-top:1px solid #21262d;}
+</style>
+</head>
+<body>
+<h1>🔬 光固化3D打印结果报告</h1>
+<h2>生成时间: ${now}</h2>
+
+<div class="card">
+<h3>📋 基本信息</h3>
+<div class="grid">
+<div class="item"><div class="item-label">模型名称</div><div class="item-value" style="font-size:14px;">${currentModelName}</div></div>
+<div class="item"><div class="item-label">总层数</div><div class="item-value">${totalLayers}</div></div>
+<div class="item"><div class="item-label">层厚</div><div class="item-value">${layerHeight.toFixed(2)} mm</div></div>
+<div class="item"><div class="item-label">模型高度</div><div class="item-value">${modelHeight.toFixed(2)} mm</div></div>
+<div class="item"><div class="item-label">曝光时间</div><div class="item-value">${exposureTime.toFixed(1)} s</div></div>
+<div class="item"><div class="item-label">总耗时</div><div class="item-value">${totalTimeStr}</div></div>
+</div>
+</div>
+
+<div class="card">
+<h3>🔧 支撑与风险</h3>
+<div class="grid">
+<div class="item"><div class="item-label">支撑数量</div><div class="item-value">${supportCount} 个</div></div>
+<div class="item"><div class="item-label">悬垂风险</div><div class="item-value">${overhangRatio}</div></div>
+<div class="item"><div class="item-label">失败风险</div><div class="item-value"><span class="risk-badge risk-${riskLevel === '高' ? 'high' : riskLevel === '中' ? 'mid' : 'low'}-bg">${riskLevel}</span></div></div>
+<div class="item"><div class="item-label">总层数</div><div class="item-value">${totalLayers}</div></div>
+</div>
+<div class="note"><strong>⚠️ 风险提示：</strong>${riskNote}</div>
+</div>
+
+<div class="footer">
+<p>由 光固化3D打印机模拟器 自动生成</p>
+</div>
+</body>
+</html>`;
+
+    const blob = new Blob([reportHTML], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `print_report_${Date.now()}.html`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+
+    updateStatus('complete', '报告已生成并下载');
 }
 
 async function handleFileUpload(file) {
@@ -740,16 +943,13 @@ async function handleFileUpload(file) {
         alert('请上传 .stl 格式的文件');
         return;
     }
-
     updateStatus('idle', '加载 STL 文件中...');
-
     try {
         const arrayBuffer = await file.arrayBuffer();
         const loader = new STLLoader();
         const geometry = loader.parse(arrayBuffer);
         geometry.computeVertexNormals();
-
-        await loadModel(geometry);
+        await loadModel(geometry, file.name);
         updateStatus('idle', `已加载: ${file.name}`);
     } catch (err) {
         updateStatus('error', 'STL 加载失败');
@@ -760,10 +960,9 @@ async function handlePresetSelect(presetName) {
     document.querySelectorAll('.preset-item').forEach(el => el.classList.remove('active'));
     const el = document.querySelector(`[data-preset="${presetName}"]`);
     if (el) el.classList.add('active');
-
     updateStatus('idle', '生成预设模型中...');
     const geom = createPresetModel(presetName);
-    await loadModel(geom);
+    await loadModel(geom, presetName);
     updateStatus('idle');
 }
 
@@ -813,7 +1012,7 @@ initUI({
         const preset = document.querySelector('.preset-item.active');
         const presetName = preset ? preset.dataset.preset : 'gear';
         const geom = createPresetModel(presetName);
-        loadModel(geom);
+        loadModel(geom, presetName);
     },
     onSpeedChange: (speed) => {
         printSpeed = speed;
@@ -828,12 +1027,13 @@ initUI({
     onInspectExit: exitInspectionMode,
     onInspectCut: setInspectionCut,
     onInspectView: setInspectViewMode,
+    onReport: generateReport,
 });
 
 async function init() {
     animate();
     const geom = createPresetModel('gear');
-    await loadModel(geom);
+    await loadModel(geom, 'gear');
 }
 
 window.addEventListener('resize', () => {

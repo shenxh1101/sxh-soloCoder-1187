@@ -10,24 +10,41 @@ function getResolution(key) {
     return RES_PRESETS[key] || RES_PRESETS['480p'];
 }
 
+function detectVideoCodec() {
+    const mp4Codecs = [
+        'video/mp4;codecs=avc1.42E01E',
+        'video/mp4;codecs=avc1.4d002a',
+        'video/mp4;codecs=avc1.640028',
+        'video/mp4;codecs=avc1.64001f',
+        'video/mp4',
+    ];
+    for (const codec of mp4Codecs) {
+        if (MediaRecorder.isTypeSupported(codec)) {
+            return { mimeType: codec, ext: 'mp4', label: 'MP4 (H.264)' };
+        }
+    }
+    const webmCodecs = [
+        'video/webm;codecs=vp9',
+        'video/webm;codecs=vp8',
+        'video/webm',
+    ];
+    for (const codec of webmCodecs) {
+        if (MediaRecorder.isTypeSupported(codec)) {
+            return { mimeType: codec, ext: 'webm', label: 'WebM (VP9)' };
+        }
+    }
+    return { mimeType: 'video/webm', ext: 'webm', label: 'WebM' };
+}
+
 export async function runExport(options) {
     const {
-        format,
-        fps,
-        resolution,
-        watermark,
-        renderer,
-        camera,
-        scene,
-        layerVisualGroup,
-        supportGroup,
-        modelGroup,
-        totalLayers,
-        currentLayer,
-        onProgress,
+        format, fps, resolution, watermark,
+        renderer, camera, scene,
+        layerVisualGroup, supportGroup, modelGroup,
+        totalLayers, currentLayer, onProgress,
     } = options;
 
-    onProgress(0, '初始化...');
+    onProgress(0, '初始化导出...');
 
     const res = getResolution(resolution);
     const aspect = res.w / res.h;
@@ -46,12 +63,11 @@ export async function runExport(options) {
     offscreenCamera.aspect = aspect;
     offscreenCamera.updateProjectionMatrix();
 
-    const watermarkTexture = watermark ? createWatermarkTexture(res.w, res.h) : null;
-
-    if (format === 'webm') {
-        await exportWebM(offscreenRenderer, offscreenCamera, scene, layerVisualGroup, watermarkTexture, totalLayers, currentLayer, step, fps, onProgress);
+    if (format === 'video') {
+        const codec = detectVideoCodec();
+        await exportVideo(offscreenRenderer, offscreenCamera, scene, layerVisualGroup, watermark, totalLayers, step, fps, codec, onProgress);
     } else {
-        const frames = await renderFrames(offscreenRenderer, offscreenCamera, scene, layerVisualGroup, watermarkTexture, totalLayers, step, onProgress);
+        const frames = await renderFrames(offscreenRenderer, offscreenCamera, scene, layerVisualGroup, watermark, totalLayers, step, onProgress);
 
         layerVisualGroup.children.forEach(child => {
             const orig = originalVisibility.find(o => o.child === child);
@@ -87,10 +103,7 @@ async function renderFrames(renderer, camera, scene, group, watermark, totalLaye
         renderer.render(scene, camera);
 
         if (watermark) {
-            const ctx = renderer.domElement.getContext('2d', { willReadFrequently: true });
-            if (ctx) {
-                ctx.drawImage(watermark, 0, 0);
-            }
+            drawWatermark(renderer.domElement, i + 1, totalLayers);
         }
 
         const dataURL = renderer.domElement.toDataURL('image/png');
@@ -200,25 +213,42 @@ async function packagePNG(frames, width, height, onProgress) {
     }
 }
 
-async function exportWebM(renderer, camera, scene, group, watermark, totalLayers, currentLayer, step, fps, onProgress) {
-    onProgress(5, '准备录制 WebM...');
+async function exportVideo(renderer, camera, scene, group, watermark, totalLayers, step, fps, codec, onProgress) {
+    onProgress(5, `准备录制 ${codec.label}...`);
 
     group.children.forEach(c => { c.visible = false; });
 
     const stream = renderer.domElement.captureStream(fps);
-    const recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9', videoBitsPerSecond: 5000000 });
+
+    let recorder;
+    try {
+        recorder = new MediaRecorder(stream, {
+            mimeType: codec.mimeType,
+            videoBitsPerSecond: 5000000,
+        });
+    } catch (e) {
+        const fallbackCodec = { mimeType: 'video/webm', ext: 'webm', label: 'WebM' };
+        recorder = new MediaRecorder(stream, {
+            mimeType: fallbackCodec.mimeType,
+            videoBitsPerSecond: 5000000,
+        });
+        codec = fallbackCodec;
+    }
+
     const chunks = [];
 
-    recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
-
-    recorder.onstop = () => {
-        const blob = new Blob(chunks, { type: 'video/webm' });
-        onProgress(100, 'WebM 视频下载完成');
-        downloadBlob(blob, `print_timelapse_${Date.now()}.webm`);
+    recorder.ondataavailable = e => {
+        if (e.data.size > 0) chunks.push(e.data);
     };
 
-    recorder.onerror = () => {
-        onProgress(100, '录制失败，请尝试其他格式');
+    recorder.onstop = () => {
+        const blob = new Blob(chunks, { type: codec.mimeType });
+        onProgress(100, `视频 (${codec.label}) 下载完成`);
+        downloadBlob(blob, `print_timelapse_${Date.now()}.${codec.ext}`);
+    };
+
+    recorder.onerror = (e) => {
+        onProgress(100, `录制失败: ${e.error ? e.error.message : '未知错误'}`);
     };
 
     recorder.start();
@@ -231,13 +261,12 @@ async function exportWebM(renderer, camera, scene, group, watermark, totalLayers
         renderer.render(scene, camera);
 
         if (watermark) {
-            const ctx = renderer.domElement.getContext('2d', { willReadFrequently: true });
-            if (ctx) ctx.drawImage(watermark, 0, 0);
+            drawWatermark(renderer.domElement, i + 1, totalLayers);
         }
 
         frameIdx++;
         const pct = 5 + Math.round((i / totalLayers) * 85);
-        onProgress(pct, `录制帧 ${frameIdx}/${Math.ceil(totalLayers / step)}...`);
+        onProgress(pct, `录制 ${codec.label} 帧 ${frameIdx}/${Math.ceil(totalLayers / step)}...`);
 
         await new Promise(r => setTimeout(r, 1000 / fps));
     }
@@ -253,16 +282,26 @@ async function exportWebM(renderer, camera, scene, group, watermark, totalLayers
     }
 }
 
-function createWatermarkTexture(w, h) {
-    const canvas = document.createElement('canvas');
-    canvas.width = w;
-    canvas.height = h;
-    const ctx = canvas.getContext('2d');
-    ctx.font = `${Math.round(h * 0.03)}px 'Segoe UI', 'PingFang SC', sans-serif`;
-    ctx.fillStyle = 'rgba(255,255,255,0.5)';
-    ctx.textAlign = 'right';
-    ctx.textBaseline = 'bottom';
-    return canvas;
+function drawWatermark(canvas, layerNum, totalLayers) {
+    try {
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (!ctx) return;
+        const w = canvas.width;
+        const h = canvas.height;
+        const fontSize = Math.max(14, Math.round(h * 0.035));
+        ctx.save();
+        ctx.font = `bold ${fontSize}px 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif`;
+        ctx.fillStyle = 'rgba(255,255,255,0.6)';
+        ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+        ctx.lineWidth = 2;
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'bottom';
+        const text = `层 ${layerNum}/${totalLayers}`;
+        ctx.strokeText(text, w - 10, h - 8);
+        ctx.fillText(text, w - 10, h - 8);
+        ctx.restore();
+    } catch (e) {
+    }
 }
 
 function dataURLToBlob(dataURL) {

@@ -4,6 +4,7 @@ export function initUI(callbacks) {
         onSpeedChange, onPresetSelect, onFileUpload, onExport,
         onTimelineChange, onTimelineRestore,
         onInspectEnter, onInspectExit, onInspectCut, onInspectView,
+        onReport,
     } = callbacks;
 
     document.getElementById('btn-start').addEventListener('click', () => onStart());
@@ -45,6 +46,11 @@ export function initUI(callbacks) {
     });
 
     document.getElementById('btn-export').addEventListener('click', () => onExport());
+
+    const btnReport = document.getElementById('btn-report');
+    if (btnReport) {
+        btnReport.addEventListener('click', () => onReport());
+    }
 
     const timelineSlider = document.getElementById('timeline-slider');
     timelineSlider.addEventListener('input', (e) => onTimelineChange(parseInt(e.target.value)));
@@ -126,6 +132,16 @@ export function updateTimelineInfo(info) {
     if (el) el.textContent = info;
 }
 
+export function updateInspectStats(area, holes, contacts) {
+    const el = document.getElementById('inspect-stats');
+    if (!el) return;
+    el.innerHTML = [
+        `<span class="istat"><span class="istat-label">截面面积</span> <span class="istat-val">${area}</span></span>`,
+        `<span class="istat"><span class="istat-label">孔洞数量</span> <span class="istat-val">${holes}</span></span>`,
+        `<span class="istat"><span class="istat-label">支撑触点</span> <span class="istat-val">${contacts}</span></span>`,
+    ].join('');
+}
+
 export function updateButtonStates(state) {
     const btnStart = document.getElementById('btn-start');
     const btnPause = document.getElementById('btn-pause');
@@ -133,11 +149,11 @@ export function updateButtonStates(state) {
     const btnReset = document.getElementById('btn-reset');
     const btnExport = document.getElementById('btn-export');
     const btnInspect = document.getElementById('btn-inspect');
+    const btnReport = document.getElementById('btn-report');
     const speedSlider = document.getElementById('speed-slider');
     const timelineSection = document.getElementById('timeline-section');
     const timelineSlider = document.getElementById('timeline-slider');
     const inspectSection = document.getElementById('inspect-section');
-    const exportSection = document.getElementById('export-section');
 
     const set = (btn, text, cls, disabled) => {
         if (!btn) return;
@@ -148,30 +164,27 @@ export function updateButtonStates(state) {
 
     const showEl = (el, show) => { if (el) el.style.display = show ? 'block' : 'none'; };
 
+    const commonIdle = () => {
+        set(btnStart, '▶ 开始打印', 'btn-primary', false);
+        set(btnPause, '⏸ 暂停', 'btn-warn', true);
+        set(btnStop, '⏹ 停止', 'btn', true);
+        set(btnExport, '导出', 'btn-primary', true);
+        if (btnInspect) set(btnInspect, '🔍 进入成品检查', 'btn', true);
+        if (btnReport) set(btnReport, '� 打印报告', 'btn', true);
+        if (speedSlider) speedSlider.disabled = false;
+        showEl(timelineSection, false);
+        if (timelineSlider) timelineSlider.disabled = true;
+        showEl(inspectSection, false);
+    };
+
     switch (state) {
         case 'idle':
-            set(btnStart, '▶ 开始打印', 'btn-primary', false);
-            set(btnPause, '⏸ 暂停', 'btn-warn', true);
-            set(btnStop, '⏹ 停止', 'btn', true);
+            commonIdle();
             set(btnReset, '↺ 重置', 'btn', true);
-            set(btnExport, '导出', 'btn-primary', true);
-            if (btnInspect) set(btnInspect, '🔍 进入成品检查', 'btn', true);
-            if (speedSlider) speedSlider.disabled = false;
-            showEl(timelineSection, false);
-            if (timelineSlider) timelineSlider.disabled = true;
-            showEl(inspectSection, false);
             break;
         case 'ready':
-            set(btnStart, '▶ 开始打印', 'btn-primary', false);
-            set(btnPause, '⏸ 暂停', 'btn-warn', true);
-            set(btnStop, '⏹ 停止', 'btn', true);
+            commonIdle();
             set(btnReset, '↺ 重置', 'btn', false);
-            set(btnExport, '导出', 'btn-primary', true);
-            if (btnInspect) set(btnInspect, '🔍 进入成品检查', 'btn', true);
-            if (speedSlider) speedSlider.disabled = false;
-            showEl(timelineSection, false);
-            if (timelineSlider) timelineSlider.disabled = true;
-            showEl(inspectSection, false);
             break;
         case 'printing':
             set(btnStart, '▶ 开始打印', 'btn-primary', true);
@@ -180,6 +193,7 @@ export function updateButtonStates(state) {
             set(btnReset, '↺ 重置', 'btn', false);
             set(btnExport, '导出', 'btn-primary', true);
             if (btnInspect) set(btnInspect, '🔍 进入成品检查', 'btn', true);
+            if (btnReport) set(btnReport, '📋 打印报告', 'btn', true);
             if (speedSlider) speedSlider.disabled = false;
             showEl(timelineSection, true);
             if (timelineSlider) timelineSlider.disabled = true;
@@ -192,6 +206,7 @@ export function updateButtonStates(state) {
             set(btnReset, '↺ 重置', 'btn', false);
             set(btnExport, '导出', 'btn-primary', true);
             if (btnInspect) set(btnInspect, '🔍 进入成品检查', 'btn', true);
+            if (btnReport) set(btnReport, '📋 打印报告', 'btn', true);
             if (speedSlider) speedSlider.disabled = false;
             showEl(timelineSection, true);
             if (timelineSlider) timelineSlider.disabled = false;
@@ -204,6 +219,7 @@ export function updateButtonStates(state) {
             set(btnReset, '↺ 重置', 'btn', false);
             set(btnExport, '导出', 'btn-primary', false);
             if (btnInspect) set(btnInspect, '🔍 进入成品检查', 'btn', false);
+            if (btnReport) set(btnReport, '📋 打印报告', 'btn', false);
             if (speedSlider) speedSlider.disabled = false;
             showEl(timelineSection, false);
             if (timelineSlider) timelineSlider.disabled = true;
@@ -216,6 +232,7 @@ export function updateButtonStates(state) {
             set(btnReset, '↺ 重置', 'btn', false);
             set(btnExport, '导出', 'btn-primary', false);
             if (btnInspect) set(btnInspect, '🔍 退出检查', 'btn-warn', false);
+            if (btnReport) set(btnReport, '📋 打印报告', 'btn', false);
             if (speedSlider) speedSlider.disabled = true;
             showEl(timelineSection, false);
             if (timelineSlider) timelineSlider.disabled = true;
