@@ -10,7 +10,7 @@ function getResolution(key) {
     return RES_PRESETS[key] || RES_PRESETS['480p'];
 }
 
-function detectVideoCodec() {
+export function detectVideoCodec() {
     const mp4Codecs = [
         'video/mp4;codecs=avc1.42E01E',
         'video/mp4;codecs=avc1.4d002a',
@@ -20,7 +20,7 @@ function detectVideoCodec() {
     ];
     for (const codec of mp4Codecs) {
         if (MediaRecorder.isTypeSupported(codec)) {
-            return { mimeType: codec, ext: 'mp4', label: 'MP4 (H.264)' };
+            return { mimeType: codec, ext: 'mp4', label: 'MP4 (H.264)', isMP4: true };
         }
     }
     const webmCodecs = [
@@ -30,10 +30,44 @@ function detectVideoCodec() {
     ];
     for (const codec of webmCodecs) {
         if (MediaRecorder.isTypeSupported(codec)) {
-            return { mimeType: codec, ext: 'webm', label: 'WebM (VP9)' };
+            return { mimeType: codec, ext: 'webm', label: 'WebM (VP9)', isMP4: false };
         }
     }
-    return { mimeType: 'video/webm', ext: 'webm', label: 'WebM' };
+    return { mimeType: 'video/webm', ext: 'webm', label: 'WebM', isMP4: false };
+}
+
+function renderFrameWithWatermark(renderer, camera, scene, watermark, layerNum, totalLayers) {
+    renderer.render(scene, camera);
+    if (!watermark) {
+        return renderer.domElement;
+    }
+    const wgl = renderer.domElement;
+    const w = wgl.width;
+    const h = wgl.height;
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(wgl, 0, 0, w, h);
+    drawWatermark(ctx, w, h, layerNum, totalLayers);
+    return canvas;
+}
+
+function drawWatermark(ctx, w, h, layerNum, totalLayers) {
+    try {
+        const fontSize = Math.max(14, Math.round(h * 0.035));
+        ctx.save();
+        ctx.font = `bold ${fontSize}px 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif`;
+        ctx.fillStyle = 'rgba(255,255,255,0.6)';
+        ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+        ctx.lineWidth = 2;
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'bottom';
+        const text = `层 ${layerNum}/${totalLayers}`;
+        ctx.strokeText(text, w - 10, h - 8);
+        ctx.fillText(text, w - 10, h - 8);
+        ctx.restore();
+    } catch (e) {}
 }
 
 export async function runExport(options) {
@@ -65,6 +99,10 @@ export async function runExport(options) {
 
     if (format === 'video') {
         const codec = detectVideoCodec();
+        if (!codec.isMP4) {
+            onProgress(100, '错误: 当前浏览器不支持 MP4 录制，请使用 GIF 或 PNG 格式');
+            return;
+        }
         await exportVideo(offscreenRenderer, offscreenCamera, scene, layerVisualGroup, watermark, totalLayers, step, fps, codec, onProgress);
     } else {
         const frames = await renderFrames(offscreenRenderer, offscreenCamera, scene, layerVisualGroup, watermark, totalLayers, step, onProgress);
@@ -100,13 +138,8 @@ async function renderFrames(renderer, camera, scene, group, watermark, totalLaye
         const child = group.getObjectByName(`layer-${i}`);
         if (child) child.visible = true;
 
-        renderer.render(scene, camera);
-
-        if (watermark) {
-            drawWatermark(renderer.domElement, i + 1, totalLayers);
-        }
-
-        const dataURL = renderer.domElement.toDataURL('image/png');
+        const canvas = renderFrameWithWatermark(renderer, camera, scene, watermark, i + 1, totalLayers);
+        const dataURL = canvas.toDataURL('image/png');
         frames.push(dataURL);
 
         frameIdx++;
@@ -218,8 +251,15 @@ async function exportVideo(renderer, camera, scene, group, watermark, totalLayer
 
     group.children.forEach(c => { c.visible = false; });
 
-    const stream = renderer.domElement.captureStream(fps);
+    const resW = renderer.domElement.width;
+    const resH = renderer.domElement.height;
 
+    const compositeCanvas = document.createElement('canvas');
+    compositeCanvas.width = resW;
+    compositeCanvas.height = resH;
+    const compCtx = compositeCanvas.getContext('2d');
+
+    const stream = compositeCanvas.captureStream(fps);
     let recorder;
     try {
         recorder = new MediaRecorder(stream, {
@@ -227,12 +267,8 @@ async function exportVideo(renderer, camera, scene, group, watermark, totalLayer
             videoBitsPerSecond: 5000000,
         });
     } catch (e) {
-        const fallbackCodec = { mimeType: 'video/webm', ext: 'webm', label: 'WebM' };
-        recorder = new MediaRecorder(stream, {
-            mimeType: fallbackCodec.mimeType,
-            videoBitsPerSecond: 5000000,
-        });
-        codec = fallbackCodec;
+        onProgress(100, `录制初始化失败: ${e.message}`);
+        return;
     }
 
     const chunks = [];
@@ -243,7 +279,7 @@ async function exportVideo(renderer, camera, scene, group, watermark, totalLayer
 
     recorder.onstop = () => {
         const blob = new Blob(chunks, { type: codec.mimeType });
-        onProgress(100, `视频 (${codec.label}) 下载完成`);
+        onProgress(100, `${codec.label} 下载完成`);
         downloadBlob(blob, `print_timelapse_${Date.now()}.${codec.ext}`);
     };
 
@@ -260,8 +296,10 @@ async function exportVideo(renderer, camera, scene, group, watermark, totalLayer
 
         renderer.render(scene, camera);
 
+        compCtx.drawImage(renderer.domElement, 0, 0, resW, resH);
+
         if (watermark) {
-            drawWatermark(renderer.domElement, i + 1, totalLayers);
+            drawWatermark(compCtx, resW, resH, i + 1, totalLayers);
         }
 
         frameIdx++;
@@ -272,35 +310,12 @@ async function exportVideo(renderer, camera, scene, group, watermark, totalLayer
     }
 
     onProgress(92, '编码视频中...');
-
     await new Promise(r => setTimeout(r, 500));
 
     if (recorder.state === 'recording') {
         recorder.requestData();
         await new Promise(r => setTimeout(r, 300));
         recorder.stop();
-    }
-}
-
-function drawWatermark(canvas, layerNum, totalLayers) {
-    try {
-        const ctx = canvas.getContext('2d', { willReadFrequently: true });
-        if (!ctx) return;
-        const w = canvas.width;
-        const h = canvas.height;
-        const fontSize = Math.max(14, Math.round(h * 0.035));
-        ctx.save();
-        ctx.font = `bold ${fontSize}px 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif`;
-        ctx.fillStyle = 'rgba(255,255,255,0.6)';
-        ctx.strokeStyle = 'rgba(0,0,0,0.5)';
-        ctx.lineWidth = 2;
-        ctx.textAlign = 'right';
-        ctx.textBaseline = 'bottom';
-        const text = `层 ${layerNum}/${totalLayers}`;
-        ctx.strokeText(text, w - 10, h - 8);
-        ctx.fillText(text, w - 10, h - 8);
-        ctx.restore();
-    } catch (e) {
     }
 }
 
