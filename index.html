@@ -29,13 +29,9 @@
             cursor: grab;
         }
 
-        #viewport:active {
-            cursor: grabbing;
-        }
+        #viewport:active { cursor: grabbing; }
 
-        #viewport canvas {
-            display: block;
-        }
+        #viewport canvas { display: block; }
 
         #panel {
             width: 340px;
@@ -97,68 +93,21 @@
             white-space: nowrap;
         }
 
-        .btn:hover {
-            background: #30363d;
-            border-color: #58a6ff;
-        }
+        .btn:hover { background: #30363d; border-color: #58a6ff; }
+        .btn:active { background: #1f2937; }
 
-        .btn:active {
-            background: #1f2937;
-        }
+        .btn-primary { background: #238636; border-color: #238636; color: #fff; font-weight: 500; }
+        .btn-primary:hover { background: #2ea043; border-color: #2ea043; }
+        .btn-primary:disabled { background: #1b3d23; border-color: #1b3d23; color: #6e7681; cursor: not-allowed; }
 
-        .btn-primary {
-            background: #238636;
-            border-color: #238636;
-            color: #fff;
-            font-weight: 500;
-        }
+        .btn-warn { background: #9e6a03; border-color: #9e6a03; color: #fff; }
+        .btn-warn:hover { background: #d29922; border-color: #d29922; }
 
-        .btn-primary:hover {
-            background: #2ea043;
-            border-color: #2ea043;
-        }
+        .btn-sm { padding: 5px 10px; font-size: 11px; }
+        .btn-full { width: 100%; }
 
-        .btn-primary:disabled {
-            background: #1b3d23;
-            border-color: #1b3d23;
-            color: #6e7681;
-            cursor: not-allowed;
-        }
-
-        .btn-danger {
-            background: #da3633;
-            border-color: #da3633;
-            color: #fff;
-        }
-
-        .btn-danger:hover {
-            background: #f85149;
-            border-color: #f85149;
-        }
-
-        .btn-warn {
-            background: #9e6a03;
-            border-color: #9e6a03;
-            color: #fff;
-        }
-
-        .btn-sm {
-            padding: 5px 10px;
-            font-size: 11px;
-        }
-
-        .btn-full {
-            width: 100%;
-        }
-
-        .btn-group {
-            display: flex;
-            gap: 8px;
-        }
-
-        .btn-group .btn {
-            flex: 1;
-        }
+        .btn-group { display: flex; gap: 8px; }
+        .btn-group .btn { flex: 1; }
 
         .file-upload-area {
             border: 2px dashed #30363d;
@@ -169,26 +118,12 @@
             transition: border-color 0.2s;
         }
 
-        .file-upload-area:hover {
-            border-color: #58a6ff;
-        }
+        .file-upload-area:hover { border-color: #58a6ff; }
+        .file-upload-area.dragover { border-color: #58a6ff; background: rgba(88,166,255,0.05); }
 
-        .file-upload-area.dragover {
-            border-color: #58a6ff;
-            background: rgba(88, 166, 255, 0.05);
-        }
+        .file-upload-area p { font-size: 12px; color: #8b949e; margin-top: 6px; }
 
-        .file-upload-area p {
-            font-size: 12px;
-            color: #8b949e;
-            margin-top: 6px;
-        }
-
-        .preset-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 8px;
-        }
+        .preset-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 
         .preset-item {
             padding: 10px;
@@ -200,20 +135,10 @@
             font-size: 12px;
         }
 
-        .preset-item:hover {
-            border-color: #58a6ff;
-            background: #1a2332;
-        }
+        .preset-item:hover { border-color: #58a6ff; background: #1a2332; }
+        .preset-item.active { border-color: #58a6ff; background: rgba(88,166,255,0.1); }
 
-        .preset-item.active {
-            border-color: #58a6ff;
-            background: rgba(88, 166, 255, 0.1);
-        }
-
-        .slider-group {
-            margin-bottom: 12px;
-        }
-
+        .slider-group { margin-bottom: 12px; }
         .slider-group label {
             display: flex;
             justify-content: space-between;
@@ -221,11 +146,7 @@
             color: #8b949e;
             margin-bottom: 4px;
         }
-
-        .slider-group label span {
-            color: #58a6ff;
-            font-weight: 500;
-        }
+        .slider-group label span { color: #58a6ff; font-weight: 500; }
 
         input[type="range"] {
             width: 100%;
@@ -247,19 +168,8 @@
             box-shadow: 0 0 4px rgba(88,166,255,0.4);
         }
 
-        .input-group {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            margin-bottom: 8px;
-        }
-
-        .input-group label {
-            font-size: 12px;
-            color: #8b949e;
-            min-width: 55px;
-        }
-
+        .input-group { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+        .input-group label { font-size: 12px; color: #8b949e; min-width: 55px; }
         .input-group input {
             flex: 1;
             padding: 6px 8px;
@@ -271,20 +181,26 @@
             font-family: inherit;
             outline: none;
         }
+        .input-group input:focus { border-color: #58a6ff; }
+        .input-group input[type="number"] { width: 70px; text-align: center; }
 
-        .input-group input:focus {
-            border-color: #58a6ff;
+        .input-group select {
+            flex: 1;
+            padding: 6px 8px;
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 4px;
+            color: #c9d1d9;
+            font-size: 12px;
+            font-family: inherit;
+            outline: none;
         }
+        .input-group select:focus { border-color: #58a6ff; }
 
-        .input-group input[type="number"] {
-            width: 70px;
-            text-align: center;
-        }
+        .input-row { display: flex; gap: 8px; margin-bottom: 8px; }
+        .input-row .input-group { flex: 1; margin-bottom: 0; }
 
-        .progress-section {
-            padding: 16px 20px;
-            border-bottom: 1px solid #21262d;
-        }
+        .progress-section { padding: 16px 20px; border-bottom: 1px solid #21262d; }
 
         .progress-bar-outer {
             width: 100%;
@@ -303,11 +219,7 @@
             width: 0%;
         }
 
-        .progress-stats {
-            display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
-            gap: 8px;
-        }
+        .progress-stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
 
         .stat-item {
             text-align: center;
@@ -317,17 +229,8 @@
             border: 1px solid #21262d;
         }
 
-        .stat-value {
-            font-size: 18px;
-            font-weight: 600;
-            color: #58a6ff;
-        }
-
-        .stat-label {
-            font-size: 10px;
-            color: #8b949e;
-            margin-top: 2px;
-        }
+        .stat-value { font-size: 18px; font-weight: 600; color: #58a6ff; }
+        .stat-label { font-size: 10px; color: #8b949e; margin-top: 2px; }
 
         .status-indicator {
             display: flex;
@@ -385,16 +288,25 @@
             font-weight: 500;
         }
 
+        .timeline-detail {
+            font-size: 10px;
+            color: #8b949e;
+            margin-top: 6px;
+            line-height: 1.5;
+            min-height: 0;
+        }
+
         .timeline-info {
             display: flex;
             justify-content: space-between;
             font-size: 10px;
             color: #8b949e;
-            margin-top: 6px;
+            margin-top: 4px;
         }
 
         .export-section {
             padding: 16px 20px;
+            border-bottom: 1px solid #21262d;
         }
 
         .export-format-group {
@@ -415,13 +327,9 @@
             outline: none;
         }
 
-        .export-format-group select:focus {
-            border-color: #58a6ff;
-        }
+        .export-format-group select:focus { border-color: #58a6ff; }
 
-        .hidden-file-input {
-            display: none;
-        }
+        .hidden-file-input { display: none; }
 
         #export-progress {
             display: none;
@@ -445,17 +353,46 @@
             transition: width 0.2s;
         }
 
-        .tooltip {
-            position: absolute;
-            background: #1c2128;
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: #8b949e;
+            margin-bottom: 8px;
+        }
+
+        .checkbox-group input[type="checkbox"] {
+            accent-color: #58a6ff;
+        }
+
+        .inspect-section {
+            padding: 16px 20px;
+            border-bottom: 1px solid #21262d;
+        }
+
+        .inspect-view-btns {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px;
+            margin-top: 8px;
+        }
+
+        .inspect-view-btn {
+            padding: 6px 8px;
             border: 1px solid #30363d;
             border-radius: 6px;
-            padding: 8px 12px;
-            font-size: 11px;
-            pointer-events: none;
+            background: #21262d;
             color: #c9d1d9;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+            cursor: pointer;
+            font-size: 11px;
+            font-family: inherit;
+            transition: all 0.15s;
+            text-align: center;
         }
+
+        .inspect-view-btn:hover { border-color: #58a6ff; }
+        .inspect-view-btn.active { border-color: #58a6ff; background: rgba(88,166,255,0.15); color: #58a6ff; }
 
         @media (max-width: 800px) {
             #app { flex-direction: column; }
@@ -545,20 +482,65 @@
             <div class="timeline-section" id="timeline-section" style="display:none;">
                 <h3>📐 层预览 <span class="timeline-label" id="timeline-label">暂无打印数据</span></h3>
                 <input type="range" id="timeline-slider" min="0" max="0" value="0" step="1" disabled />
+                <div class="timeline-detail" id="timeline-detail"></div>
                 <div class="timeline-info">
                     <span>第 0 层</span>
                     <span id="timeline-max-label">共 0 层</span>
                 </div>
             </div>
 
-            <div class="export-section">
-                <h3 style="font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#8b949e;margin-bottom:12px;">📸 导出</h3>
-                <div class="export-format-group">
-                    <select id="export-format">
-                        <option value="gif">🎞️ GIF 延时摄影</option>
-                        <option value="png">🖼️ PNG 帧序列</option>
-                    </select>
-                    <button class="btn btn-primary" id="btn-export" disabled>导出</button>
+            <div class="inspect-section" id="inspect-section" style="display:none;">
+                <h3>🔍 成品检查</h3>
+                <div class="slider-group">
+                    <label>剖切高度 <span id="inspect-cut-label">50%</span></label>
+                    <input type="range" id="inspect-cut" min="0" max="1" value="0.5" step="0.01" />
+                </div>
+                <div class="inspect-view-btns">
+                    <button class="inspect-view-btn active" data-view="model">原模型</button>
+                    <button class="inspect-view-btn" data-view="layers">固化层</button>
+                    <button class="inspect-view-btn" data-view="supports">支撑</button>
+                    <button class="inspect-view-btn" data-view="all">全部</button>
+                </div>
+            </div>
+
+            <div class="export-section" id="export-section">
+                <h3>📸 导出</h3>
+                <div class="input-row">
+                    <div class="input-group">
+                        <label>格式</label>
+                        <select id="export-format">
+                            <option value="gif">🎞️ GIF</option>
+                            <option value="png">🖼️ PNG帧</option>
+                            <option value="webm">🎬 WebM</option>
+                        </select>
+                    </div>
+                    <div class="input-group">
+                        <label>帧率</label>
+                        <select id="export-fps">
+                            <option value="5">5 fps</option>
+                            <option value="10" selected>10 fps</option>
+                            <option value="15">15 fps</option>
+                            <option value="30">30 fps</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="input-row">
+                    <div class="input-group">
+                        <label>分辨率</label>
+                        <select id="export-resolution">
+                            <option value="480p">480p</option>
+                            <option value="720p" selected>720p</option>
+                            <option value="1080p">1080p</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="checkbox-group">
+                    <input type="checkbox" id="export-watermark" />
+                    <label for="export-watermark">显示层号水印</label>
+                </div>
+                <div class="btn-group">
+                    <button class="btn btn-primary btn-full" id="btn-export" disabled>导出</button>
+                    <button class="btn" id="btn-inspect" disabled>🔍 进入成品检查</button>
                 </div>
                 <div id="export-progress">
                     <span id="export-progress-text">正在生成...</span>

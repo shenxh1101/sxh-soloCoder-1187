@@ -4,8 +4,8 @@ import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { createPrinterModel } from './printer.js';
 import { sliceModel, generateSupports } from './slicer.js';
 import { createPresetModel } from './presets.js';
-import { initUI, updateProgressUI, updateStatus, updateButtonStates, updateRemainingTime, setExportProgress, updatePhaseStatus, updateTimelineMax, updateTimelineValue } from './ui.js';
-import { exportGIF, exportPNGFrames } from './export.js';
+import { initUI, updateProgressUI, updateStatus, updateButtonStates, updateRemainingTime, setExportProgress, updatePhaseStatus, updateTimelineMax, updateTimelineValue, updateTimelineInfo } from './ui.js';
+import { runExport } from './export.js';
 
 const viewport = document.getElementById('viewport');
 
@@ -109,6 +109,13 @@ let modelClones = [];
 let modelHeight = 0;
 let layerHeight = 0.2;
 
+let inspectState = {
+    active: false,
+    cutHeight: 0,
+    viewMode: 'model',
+    clippingPlane: null,
+};
+
 function clearModelGroups() {
     while (modelGroup.children.length > 0) {
         const child = modelGroup.children[0];
@@ -140,21 +147,15 @@ function clearModelGroups() {
 function disposeObject(obj) {
     if (!obj) return;
     obj.traverse(child => {
-        if (child.geometry) {
-            child.geometry.dispose();
-        }
+        if (child.geometry) child.geometry.dispose();
         if (child.material) {
             if (Array.isArray(child.material)) {
                 child.material.forEach(m => {
-                    Object.values(m).forEach(v => {
-                        if (v && v.isTexture) v.dispose();
-                    });
+                    Object.values(m).forEach(v => { if (v && v.isTexture) v.dispose(); });
                     m.dispose();
                 });
             } else {
-                Object.values(child.material).forEach(v => {
-                    if (v && v.isTexture) v.dispose();
-                });
+                Object.values(child.material).forEach(v => { if (v && v.isTexture) v.dispose(); });
                 child.material.dispose();
             }
         }
@@ -171,6 +172,7 @@ function resetPrint() {
     updatePhaseStatus('');
     updateTimelineMax(0);
     updateTimelineValue(0);
+    updateTimelineInfo('');
     printState = 'idle';
     animState.isPaused = false;
     animState.pauseResolve = null;
@@ -179,6 +181,7 @@ function resetPrint() {
     animState.currentLayer = 0;
     animState.previewLayer = -1;
     printer.setAnimState(animState);
+    exitInspectionMode();
 }
 
 async function loadModel(geometry) {
@@ -193,7 +196,6 @@ async function loadModel(geometry) {
     modelHeight = bbox.max.y - bbox.min.y;
     totalLayers = Math.max(1, Math.ceil(modelHeight / layerHeight));
 
-    geometry.computeBoundingBox();
     const bottomOffset = -bbox.min.y;
     geometry.translate(0, bottomOffset, 0);
     geometry.computeBoundingBox();
@@ -234,6 +236,7 @@ async function loadModel(geometry) {
     updateButtonStates('ready');
     updateTimelineMax(0);
     updateTimelineValue(0);
+    updateTimelineInfo('');
 
     return { layerHeight, modelHeight, totalLayers };
 }
@@ -250,11 +253,7 @@ function buildSupportVisuals(supports) {
             opacity: 0.7,
         });
         const cone = new THREE.Mesh(geom, mat);
-        cone.position.set(
-            s.top.x,
-            (s.top.y + s.bottom.y) / 2,
-            s.top.z
-        );
+        cone.position.set(s.top.x, (s.top.y + s.bottom.y) / 2, s.top.z);
         cone.castShadow = true;
         cone.receiveShadow = true;
         supportGroup.add(cone);
@@ -340,7 +339,17 @@ function showAllLayerVisuals() {
 
 function setModelClipping(revealY) {
     if (!currentMesh || !currentMesh.material) return;
-    currentMesh.material.clippingPlanes[0] = new THREE.Plane(new THREE.Vector3(0, -1, 0), revealY);
+    if (!currentMesh.material.clippingPlanes || currentMesh.material.clippingPlanes.length === 0) {
+        currentMesh.material.clippingPlanes = [new THREE.Plane(new THREE.Vector3(0, -1, 0), revealY)];
+    } else {
+        currentMesh.material.clippingPlanes[0] = new THREE.Plane(new THREE.Vector3(0, -1, 0), revealY);
+    }
+    currentMesh.material.needsUpdate = true;
+}
+
+function clearModelClipping() {
+    if (!currentMesh || !currentMesh.material) return;
+    currentMesh.material.clippingPlanes = [];
     currentMesh.material.needsUpdate = true;
 }
 
@@ -393,6 +402,7 @@ async function startPrint() {
         await loadModel(geom);
     }
 
+    exitInspectionMode();
     hideAllLayerVisuals();
     if (currentMesh) {
         setModelClipping(-999);
@@ -411,6 +421,7 @@ async function runPrintAnimation() {
     updateButtonStates('printing');
     updateTimelineMax(totalLayers);
     updateTimelineValue(0);
+    updateTimelineInfo('');
     animationStartTime = performance.now();
 
     updatePhaseStatus('lowering');
@@ -483,10 +494,7 @@ async function runPrintAnimation() {
     updatePhaseStatus('raising');
     await printer.raiseToTop();
 
-    if (currentMesh) {
-        currentMesh.material.clippingPlanes = [];
-        currentMesh.material.needsUpdate = true;
-    }
+    clearModelClipping();
     hideAllLayerVisuals();
 
     printState = 'complete';
@@ -498,6 +506,7 @@ async function runPrintAnimation() {
     updatePhaseStatus('');
     updateTimelineMax(totalLayers);
     updateTimelineValue(totalLayers);
+    updateTimelineInfo('点击"成品检查"查看内部结构');
 }
 
 function handleAnimationStop() {
@@ -526,6 +535,7 @@ function pausePrint() {
     printState = 'paused';
     updateTimelineMax(currentLayer);
     updateTimelineValue(currentLayer);
+    updateTimelineInfo('拖动滑块预览已打印层');
 }
 
 function resumePrint() {
@@ -541,6 +551,7 @@ function resumePrint() {
         showLayerVisual(i);
     }
     updateTimelineValue(currentLayer);
+    updateTimelineInfo('');
     resolvePause();
 }
 
@@ -575,6 +586,10 @@ function previewLayer(layerIndex) {
     printer.currentPlatformY = printer.platformGroup.position.y;
 
     const elapsed = (performance.now() - animationStartTime) / 1000;
+    const elapsedStr = elapsed < 60
+        ? `${Math.round(elapsed)}s`
+        : `${Math.floor(elapsed / 60)}m ${Math.round(elapsed % 60)}s`;
+
     const remaining = totalLayers > 0 && idx > 0
         ? Math.max(0, (elapsed / currentLayer) * (totalLayers - idx))
         : 0;
@@ -582,10 +597,16 @@ function previewLayer(layerIndex) {
         ? `${Math.round(remaining)}s`
         : `${Math.floor(remaining / 60)}m ${Math.round(remaining % 60)}s`;
 
+    const layerHeightMm = (idx * printer.currentLayerHeight).toFixed(2);
+
     const progress = totalLayers > 0 ? Math.round((idx / totalLayers) * 100) : 0;
     updateProgressUI(progress, idx, totalLayers);
     updateRemainingTime(remainingStr);
-    updateStatus('paused', `预览第 ${idx} 层（共 ${currentLayer} 层已打印）`);
+    updateTimelineValue(idx);
+
+    const info = `层 ${idx}/${currentLayer} | 高度 ${layerHeightMm}mm | 已用 ${elapsedStr} | 剩余 ${remainingStr}`;
+    updateTimelineInfo(info);
+    updateStatus('paused', `预览第 ${idx} 层（实际已打印 ${currentLayer} 层）`);
 }
 
 function restoreFromPreview() {
@@ -615,6 +636,103 @@ function restoreFromPreview() {
     updateRemainingTime(remainingStr);
     updateStatus('paused');
     updateTimelineValue(currentLayer);
+    updateTimelineInfo('拖动滑块预览已打印层');
+}
+
+function enterInspectionMode() {
+    if (printState !== 'complete') return;
+    inspectState.active = true;
+    inspectState.viewMode = 'model';
+    inspectState.cutHeight = modelHeight / 2;
+
+    if (currentMesh && currentMesh.material) {
+        currentMesh.material.clippingPlanes = [new THREE.Plane(new THREE.Vector3(0, -1, 0), modelHeight)];
+        currentMesh.material.side = THREE.DoubleSide;
+        currentMesh.material.needsUpdate = true;
+    }
+
+    showAllLayerVisuals();
+    modelGroup.visible = true;
+    layerVisualGroup.visible = true;
+    supportGroup.visible = false;
+
+    updateButtonStates('inspect');
+    updateStatus('complete', '成品检查模式 - 拖动剖切滑块查看内部');
+    updateInspectUI();
+}
+
+function exitInspectionMode() {
+    if (!inspectState.active) return;
+    inspectState.active = false;
+
+    if (currentMesh && currentMesh.material) {
+        currentMesh.material.clippingPlanes = [];
+        currentMesh.material.side = THREE.DoubleSide;
+        currentMesh.material.needsUpdate = true;
+    }
+
+    hideAllLayerVisuals();
+    modelGroup.visible = true;
+    layerVisualGroup.visible = false;
+    supportGroup.visible = false;
+
+    if (printState === 'complete') {
+        updateButtonStates('complete');
+        updateStatus('complete');
+    }
+}
+
+function setInspectionCut(normalizedHeight) {
+    if (!inspectState.active) return;
+    inspectState.cutHeight = normalizedHeight * modelHeight;
+    const cutY = inspectState.cutHeight;
+
+    if (currentMesh && currentMesh.material) {
+        if (!currentMesh.material.clippingPlanes || currentMesh.material.clippingPlanes.length === 0) {
+            currentMesh.material.clippingPlanes = [new THREE.Plane(new THREE.Vector3(0, -1, 0), cutY)];
+        } else {
+            currentMesh.material.clippingPlanes[0] = new THREE.Plane(new THREE.Vector3(0, -1, 0), cutY);
+        }
+        currentMesh.material.needsUpdate = true;
+    }
+
+    updateInspectUI();
+}
+
+function setInspectViewMode(mode) {
+    if (!inspectState.active) return;
+    inspectState.viewMode = mode;
+
+    switch (mode) {
+        case 'model':
+            modelGroup.visible = true;
+            layerVisualGroup.visible = false;
+            supportGroup.visible = false;
+            break;
+        case 'layers':
+            modelGroup.visible = false;
+            layerVisualGroup.visible = true;
+            supportGroup.visible = false;
+            break;
+        case 'supports':
+            modelGroup.visible = false;
+            layerVisualGroup.visible = false;
+            supportGroup.visible = true;
+            break;
+        case 'all':
+            modelGroup.visible = true;
+            layerVisualGroup.visible = true;
+            supportGroup.visible = true;
+            break;
+    }
+
+    updateInspectUI();
+}
+
+function updateInspectUI() {
+    const cutMm = inspectState.cutHeight.toFixed(2);
+    const normalized = modelHeight > 0 ? Math.round((inspectState.cutHeight / modelHeight) * 100) : 50;
+    updateStatus('complete', `剖切高度: ${cutMm}mm (${normalized}%) | 视图: ${inspectState.viewMode}`);
 }
 
 async function handleFileUpload(file) {
@@ -649,16 +767,40 @@ async function handlePresetSelect(presetName) {
     updateStatus('idle');
 }
 
-function handleExport(format) {
-    if (printState !== 'complete') {
+function handleExport() {
+    if (printState !== 'complete' && printState !== 'paused') {
         alert('请等待打印完成后再导出');
         return;
     }
-    if (format === 'gif') {
-        exportGIF(renderer, camera, scene, layerVisualGroup, totalLayers, setExportProgress);
-    } else if (format === 'png') {
-        exportPNGFrames(renderer, camera, scene, layerVisualGroup, totalLayers, setExportProgress);
-    }
+
+    const format = document.getElementById('export-format').value;
+    const fps = parseInt(document.getElementById('export-fps').value) || 10;
+    const resolution = document.getElementById('export-resolution').value;
+    const watermark = document.getElementById('export-watermark').checked;
+
+    const exportLayers = printState === 'paused' ? currentLayer : totalLayers;
+
+    setExportProgress(0, '正在初始化导出...');
+
+    runExport({
+        format,
+        fps,
+        resolution,
+        watermark,
+        renderer,
+        camera,
+        scene,
+        layerVisualGroup,
+        supportGroup,
+        modelGroup,
+        totalLayers: exportLayers,
+        currentLayer: exportLayers,
+        onProgress: (percent, statusText) => {
+            setExportProgress(percent, statusText);
+        },
+    }).catch(err => {
+        setExportProgress(100, `导出失败: ${err.message}`);
+    });
 }
 
 initUI({
@@ -682,6 +824,10 @@ initUI({
     onExport: handleExport,
     onTimelineChange: previewLayer,
     onTimelineRestore: restoreFromPreview,
+    onInspectEnter: enterInspectionMode,
+    onInspectExit: exitInspectionMode,
+    onInspectCut: setInspectionCut,
+    onInspectView: setInspectViewMode,
 });
 
 async function init() {
