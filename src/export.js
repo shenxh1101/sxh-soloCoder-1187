@@ -1,4 +1,6 @@
-export async function exportGIF(renderer, camera, scene, layerVisualGroup, totalLayers, currentLayer, onProgress) {
+export async function exportGIF(renderer, camera, scene, layerVisualGroup, totalLayers, onProgress) {
+    onProgress(0, '准备导出 GIF...');
+
     const frames = [];
     const frameCount = Math.min(totalLayers, 200);
     const step = Math.max(1, Math.floor(totalLayers / frameCount));
@@ -23,7 +25,7 @@ export async function exportGIF(renderer, camera, scene, layerVisualGroup, total
     offscreenCamera.aspect = targetWidth / targetHeight;
     offscreenCamera.updateProjectionMatrix();
 
-    onProgress(5);
+    onProgress(5, '渲染帧中...');
 
     layerVisualGroup.children.forEach(child => { child.visible = false; });
 
@@ -36,8 +38,8 @@ export async function exportGIF(renderer, camera, scene, layerVisualGroup, total
         const dataURL = offscreenRenderer.domElement.toDataURL('image/png');
         frames.push(dataURL);
 
-        const progress = 5 + Math.round((i / totalLayers) * 80);
-        onProgress(progress);
+        const progress = 5 + Math.round((i / totalLayers) * 60);
+        onProgress(progress, `渲染帧 ${Math.floor(i / step) + 1}/${Math.ceil(totalLayers / step)}...`);
 
         await new Promise(resolve => setTimeout(resolve, 10));
     }
@@ -49,11 +51,12 @@ export async function exportGIF(renderer, camera, scene, layerVisualGroup, total
 
     offscreenRenderer.dispose();
 
-    onProgress(90);
+    onProgress(70, '编码 GIF...');
 
     const GIFConstructor = window.GIF;
+
     if (!GIFConstructor) {
-        fallbackExport(frames, targetWidth, targetHeight, onProgress);
+        downloadAsPNGGrid(frames, targetWidth, targetHeight, onProgress);
         return;
     }
 
@@ -67,28 +70,16 @@ export async function exportGIF(renderer, camera, scene, layerVisualGroup, total
         });
 
         gif.on('progress', (p) => {
-            const gifProgress = 90 + Math.round(p * 10);
-            onProgress(gifProgress);
+            const gifProgress = 70 + Math.round(p * 25);
+            onProgress(gifProgress, `编码 GIF ${Math.round(p * 100)}%...`);
         });
 
         gif.on('finished', (blob) => {
-            onProgress(100);
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `3d_print_timelapse_${Date.now()}.gif`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
+            onProgress(100, '下载完成');
+            downloadBlob(blob, `3d_print_timelapse_${Date.now()}.gif`);
         });
 
-        gif.on('error', (err) => {
-            console.error('GIF encoding error:', err);
-            fallbackExport(frames, targetWidth, targetHeight, onProgress);
-        });
-
-        const frameDelay = Math.max(10, Math.round(200 / frames.length));
+        const frameDelay = Math.max(10, Math.round(300 / frames.length));
         const loadedImages = [];
         let imagesLoaded = 0;
 
@@ -99,7 +90,7 @@ export async function exportGIF(renderer, camera, scene, layerVisualGroup, total
                 imagesLoaded++;
                 if (imagesLoaded === frames.length) {
                     loadedImages.forEach(limg => {
-                        gif.addFrame(limg, { delay: frameDelay });
+                        if (limg) gif.addFrame(limg, { delay: frameDelay });
                     });
                     gif.render();
                 }
@@ -107,22 +98,136 @@ export async function exportGIF(renderer, camera, scene, layerVisualGroup, total
             img.onerror = () => {
                 imagesLoaded++;
                 if (imagesLoaded === frames.length) {
-                    loadedImages.forEach(limg => {
-                        if (limg) gif.addFrame(limg, { delay: frameDelay });
-                    });
-                    gif.render();
+                    const validImages = loadedImages.filter(Boolean);
+                    if (validImages.length > 0) {
+                        validImages.forEach(limg => gif.addFrame(limg, { delay: frameDelay }));
+                        gif.render();
+                    } else {
+                        downloadAsPNGGrid(frames, targetWidth, targetHeight, onProgress);
+                    }
                 }
             };
             img.src = dataURL;
         });
     } catch (err) {
-        console.error('GIF export error:', err);
-        fallbackExport(frames, targetWidth, targetHeight, onProgress);
+        downloadAsPNGGrid(frames, targetWidth, targetHeight, onProgress);
     }
 }
 
-function fallbackExport(frames, frameWidth, frameHeight, onProgress) {
-    onProgress(95);
+export async function exportPNGFrames(renderer, camera, scene, layerVisualGroup, totalLayers, onProgress) {
+    onProgress(0, '准备导出 PNG 序列...');
+
+    const zipReady = typeof JSZip !== 'undefined';
+    const frameCount = Math.min(totalLayers, 200);
+    const step = Math.max(1, Math.floor(totalLayers / frameCount));
+
+    const originalVisibility = [];
+    layerVisualGroup.children.forEach(child => {
+        originalVisibility.push({ child, visible: child.visible });
+    });
+
+    const width = renderer.domElement.width;
+    const height = renderer.domElement.height;
+    const targetWidth = 480;
+    const targetHeight = Math.round(height * (targetWidth / width));
+
+    const offscreenRenderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+    offscreenRenderer.setSize(targetWidth, targetHeight);
+    offscreenRenderer.setClearColor(0x0d1117);
+    offscreenRenderer.toneMapping = THREE.ACESFilmicToneMapping;
+    offscreenRenderer.toneMappingExposure = 1.2;
+
+    const offscreenCamera = camera.clone();
+    offscreenCamera.aspect = targetWidth / targetHeight;
+    offscreenCamera.updateProjectionMatrix();
+
+    onProgress(5, '渲染帧中...');
+
+    layerVisualGroup.children.forEach(child => { child.visible = false; });
+
+    const frameBlobs = [];
+    let actualIdx = 0;
+
+    for (let i = 0; i < totalLayers; i += step) {
+        const layerChild = layerVisualGroup.getObjectByName(`layer-${i}`);
+        if (layerChild) layerChild.visible = true;
+
+        offscreenRenderer.render(scene, offscreenCamera);
+
+        const blob = await new Promise(resolve => {
+            offscreenRenderer.domElement.toBlob(resolve, 'image/png');
+        });
+
+        if (blob) {
+            frameBlobs.push({ blob, index: actualIdx });
+        }
+
+        actualIdx++;
+        const progress = 5 + Math.round((i / totalLayers) * 85);
+        onProgress(progress, `渲染帧 ${actualIdx}/${Math.ceil(totalLayers / step)}...`);
+
+        await new Promise(resolve => setTimeout(resolve, 10));
+    }
+
+    layerVisualGroup.children.forEach((child, i) => {
+        const orig = originalVisibility.find(o => o.child === child);
+        if (orig) child.visible = orig.visible;
+    });
+
+    offscreenRenderer.dispose();
+
+    onProgress(92, '打包下载中...');
+
+    if (frameBlobs.length === 1) {
+        downloadBlob(frameBlobs[0].blob, `3d_print_layer_000.png`);
+        onProgress(100, '下载完成');
+    } else if (zipReady) {
+        try {
+            const zip = new JSZip();
+            frameBlobs.forEach(({ blob, index }) => {
+                const padded = String(index).padStart(4, '0');
+                zip.file(`frame_${padded}.png`, blob);
+            });
+            const zipBlob = await zip.generateAsync({ type: 'blob' }, (meta) => {
+                const pct = 92 + Math.round(meta.percent * 0.08);
+                onProgress(pct, `ZIP 压缩 ${meta.percent}%...`);
+            });
+            onProgress(100, '下载完成');
+            downloadBlob(zipBlob, `3d_print_frames_${Date.now()}.zip`);
+        } catch (err) {
+            downloadFrameBlobs(frameBlobs, onProgress);
+        }
+    } else {
+        downloadFrameBlobs(frameBlobs, onProgress);
+    }
+}
+
+function downloadFrameBlobs(frameBlobs, onProgress) {
+    onProgress(95, '逐个下载帧...');
+    frameBlobs.forEach(({ blob, index }, i) => {
+        setTimeout(() => {
+            const padded = String(index).padStart(4, '0');
+            downloadBlob(blob, `3d_print_frame_${padded}.png`);
+            if (i === frameBlobs.length - 1) {
+                onProgress(100, `已下载 ${frameBlobs.length} 帧`);
+            }
+        }, i * 200);
+    });
+}
+
+function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function downloadAsPNGGrid(frames, frameWidth, frameHeight, onProgress) {
+    onProgress(95, '生成 PNG 网格...');
 
     const cols = 5;
     const rows = Math.ceil(frames.length / cols);
@@ -142,27 +247,12 @@ function fallbackExport(frames, frameWidth, frameHeight, onProgress) {
             ctx.drawImage(img, col * frameWidth, row * frameHeight, frameWidth, frameHeight);
             loaded++;
             if (loaded === frames.length) {
-                onProgress(100);
-                const url = canvas.toDataURL('image/png');
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = `3d_print_timelapse_${Date.now()}.png`;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-            }
-        };
-        img.onerror = () => {
-            loaded++;
-            if (loaded === frames.length) {
-                onProgress(100);
-                const url = canvas.toDataURL('image/png');
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = `3d_print_timelapse_${Date.now()}.png`;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
+                onProgress(100, '下载完成');
+                canvas.toBlob(blob => {
+                    if (blob) {
+                        downloadBlob(blob, `3d_print_timelapse_grid_${Date.now()}.png`);
+                    }
+                });
             }
         };
         img.src = dataURL;

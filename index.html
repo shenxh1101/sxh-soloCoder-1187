@@ -345,6 +345,7 @@
             height: 8px;
             border-radius: 50%;
             background: #6e7681;
+            flex-shrink: 0;
         }
 
         .status-dot.idle { background: #6e7681; }
@@ -358,22 +359,78 @@
             50% { opacity: 0.4; }
         }
 
+        .phase-indicator {
+            margin-top: 6px;
+            padding: 4px 12px;
+            font-size: 11px;
+            color: #d29922;
+            font-weight: 500;
+            min-height: 18px;
+        }
+
+        .timeline-section {
+            padding: 16px 20px;
+            border-bottom: 1px solid #21262d;
+        }
+
+        .timeline-section h3 {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .timeline-label {
+            font-size: 11px;
+            color: #58a6ff;
+            font-weight: 500;
+        }
+
+        .timeline-info {
+            display: flex;
+            justify-content: space-between;
+            font-size: 10px;
+            color: #8b949e;
+            margin-top: 6px;
+        }
+
         .export-section {
             padding: 16px 20px;
+        }
+
+        .export-format-group {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+
+        .export-format-group select {
+            flex: 1;
+            padding: 6px 8px;
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 4px;
+            color: #c9d1d9;
+            font-size: 12px;
+            font-family: inherit;
+            outline: none;
+        }
+
+        .export-format-group select:focus {
+            border-color: #58a6ff;
         }
 
         .hidden-file-input {
             display: none;
         }
 
-        #gif-progress {
+        #export-progress {
             display: none;
             margin-top: 8px;
             font-size: 11px;
             color: #8b949e;
         }
 
-        #gif-progress .gif-bar {
+        #export-progress .export-bar {
             height: 4px;
             background: #21262d;
             border-radius: 2px;
@@ -381,7 +438,7 @@
             overflow: hidden;
         }
 
-        #gif-progress .gif-bar-inner {
+        #export-progress .export-bar-inner {
             height: 100%;
             background: #58a6ff;
             width: 0%;
@@ -461,11 +518,12 @@
             </div>
 
             <div class="progress-section">
-                <div class="status-indicator" style="margin-bottom:10px;">
+                <div class="status-indicator" style="margin-bottom:6px;">
                     <div class="status-dot idle" id="status-dot"></div>
                     <span id="status-text">就绪</span>
                 </div>
-                <div class="progress-bar-outer">
+                <div class="phase-indicator" id="phase-status"></div>
+                <div class="progress-bar-outer" style="margin-top: 6px;">
                     <div class="progress-bar-inner" id="progress-bar"></div>
                 </div>
                 <div class="progress-stats">
@@ -484,14 +542,27 @@
                 </div>
             </div>
 
+            <div class="timeline-section" id="timeline-section" style="display:none;">
+                <h3>📐 层预览 <span class="timeline-label" id="timeline-label">暂无打印数据</span></h3>
+                <input type="range" id="timeline-slider" min="0" max="0" value="0" step="1" disabled />
+                <div class="timeline-info">
+                    <span>第 0 层</span>
+                    <span id="timeline-max-label">共 0 层</span>
+                </div>
+            </div>
+
             <div class="export-section">
                 <h3 style="font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#8b949e;margin-bottom:12px;">📸 导出</h3>
-                <button class="btn btn-full" id="btn-export-gif" disabled>
-                    🎞️ 导出延时摄影 GIF
-                </button>
-                <div id="gif-progress">
-                    <span>正在生成 GIF...</span>
-                    <div class="gif-bar"><div class="gif-bar-inner" id="gif-bar-inner"></div></div>
+                <div class="export-format-group">
+                    <select id="export-format">
+                        <option value="gif">🎞️ GIF 延时摄影</option>
+                        <option value="png">🖼️ PNG 帧序列</option>
+                    </select>
+                    <button class="btn btn-primary" id="btn-export" disabled>导出</button>
+                </div>
+                <div id="export-progress">
+                    <span id="export-progress-text">正在生成...</span>
+                    <div class="export-bar"><div class="export-bar-inner" id="export-bar-inner"></div></div>
                 </div>
             </div>
         </div>
@@ -507,6 +578,7 @@
     </script>
 
     <script src="https://cdn.jsdelivr.net/npm/gif.js@0.2.0/dist/gif.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 
     <script type="module" src="./src/main.js"></script>
 </body>

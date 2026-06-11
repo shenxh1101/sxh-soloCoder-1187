@@ -4,8 +4,8 @@ import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { createPrinterModel } from './printer.js';
 import { sliceModel, generateSupports } from './slicer.js';
 import { createPresetModel } from './presets.js';
-import { initUI, updateProgressUI, updateStatus, updateButtonStates, updateRemainingTime, setGifProgress } from './ui.js';
-import { exportGIF } from './export.js';
+import { initUI, updateProgressUI, updateStatus, updateButtonStates, updateRemainingTime, setExportProgress, updatePhaseStatus, updateTimelineMax, updateTimelineValue } from './ui.js';
+import { exportGIF, exportPNGFrames } from './export.js';
 
 const viewport = document.getElementById('viewport');
 
@@ -67,7 +67,17 @@ controls.maxDistance = 80;
 controls.maxPolarAngle = Math.PI * 0.7;
 controls.update();
 
+let animState = {
+    isPaused: false,
+    pauseResolve: null,
+    stopRequested: false,
+    currentPhase: 'idle',
+    currentLayer: 0,
+    previewLayer: -1,
+};
+
 const printer = createPrinterModel();
+printer.setAnimState(animState);
 scene.add(printer.group);
 
 const modelGroup = new THREE.Group();
@@ -90,14 +100,14 @@ let currentLayer = 0;
 let printState = 'idle';
 let animationId = null;
 let printSpeed = 1.0;
-let isPaused = false;
-let pauseResolve = null;
 let animationStartTime = 0;
 let perLayerAnimDuration = 0.4;
 
 let currentGeometry = null;
 let currentMesh = null;
 let modelClones = [];
+let modelHeight = 0;
+let layerHeight = 0.2;
 
 function clearModelGroups() {
     while (modelGroup.children.length > 0) {
@@ -123,6 +133,8 @@ function clearModelGroups() {
     currentLayer = 0;
     currentGeometry = null;
     currentMesh = null;
+    animState.currentLayer = 0;
+    animState.previewLayer = -1;
 }
 
 function disposeObject(obj) {
@@ -156,24 +168,30 @@ function resetPrint() {
     updateStatus('idle');
     updateButtonStates('idle');
     updateRemainingTime('--:--');
+    updatePhaseStatus('');
+    updateTimelineMax(0);
+    updateTimelineValue(0);
     printState = 'idle';
-    currentLayer = 0;
-    isPaused = false;
-    pauseResolve = null;
+    animState.isPaused = false;
+    animState.pauseResolve = null;
+    animState.stopRequested = false;
+    animState.currentPhase = 'idle';
+    animState.currentLayer = 0;
+    animState.previewLayer = -1;
+    printer.setAnimState(animState);
 }
 
 async function loadModel(geometry) {
     resetPrint();
 
-    const layerHeight = parseFloat(document.getElementById('layer-height').value) || 0.2;
+    layerHeight = parseFloat(document.getElementById('layer-height').value) || 0.2;
 
     geometry.computeBoundingBox();
     geometry.center();
 
     const bbox = geometry.boundingBox;
-    const modelHeight = bbox.max.y - bbox.min.y;
-    const scaledLayerHeight = layerHeight;
-    totalLayers = Math.max(1, Math.ceil(modelHeight / scaledLayerHeight));
+    modelHeight = bbox.max.y - bbox.min.y;
+    totalLayers = Math.max(1, Math.ceil(modelHeight / layerHeight));
 
     geometry.computeBoundingBox();
     const bottomOffset = -bbox.min.y;
@@ -182,13 +200,14 @@ async function loadModel(geometry) {
 
     currentGeometry = geometry;
 
+    const clippingPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), 0);
     const material = new THREE.MeshStandardMaterial({
         color: 0xaabbcc,
         roughness: 0.5,
         metalness: 0.1,
         transparent: true,
         opacity: 0.85,
-        clippingPlanes: [new THREE.Plane(new THREE.Vector3(0, -1, 0), 0)],
+        clippingPlanes: [clippingPlane],
         clipShadows: true,
         side: THREE.DoubleSide,
     });
@@ -202,19 +221,21 @@ async function loadModel(geometry) {
 
     printer.setModelBounds(geometry.boundingBox.min, geometry.boundingBox.max);
     printer.setTotalLayers(totalLayers);
-    printer.setLayerHeight(scaledLayerHeight);
+    printer.setLayerHeight(layerHeight);
 
-    slicedLayers = sliceModel(geometry, scaledLayerHeight);
-    supports = generateSupports(geometry, scaledLayerHeight);
+    slicedLayers = sliceModel(geometry, layerHeight);
+    supports = generateSupports(geometry, layerHeight);
 
-    buildSupportVisuals(supports, geometry.boundingBox);
+    buildSupportVisuals(supports);
     buildLayerVisuals(slicedLayers);
 
     updateProgressUI(0, 0, totalLayers);
     updateStatus('idle');
     updateButtonStates('ready');
+    updateTimelineMax(0);
+    updateTimelineValue(0);
 
-    return { layerHeight: scaledLayerHeight, modelHeight, totalLayers };
+    return { layerHeight, modelHeight, totalLayers };
 }
 
 function buildSupportVisuals(supports) {
@@ -242,21 +263,36 @@ function buildSupportVisuals(supports) {
 
 function buildLayerVisuals(layers) {
     layers.forEach((layer, index) => {
-        const loops = layer.loops;
-        if (loops.length === 0) return;
+        const layerData = layer.loops;
+        if (layerData.length === 0) return;
 
         const group = new THREE.Group();
         group.name = `layer-${index}`;
         group.visible = false;
 
-        loops.forEach(loop => {
-            if (loop.length < 3) return;
+        layerData.forEach(loopData => {
+            const outerLoop = loopData.outer;
+            if (outerLoop.length < 3) return;
+
             const shape = new THREE.Shape();
-            shape.moveTo(loop[0].x, loop[0].z);
-            for (let i = 1; i < loop.length; i++) {
-                shape.lineTo(loop[i].x, loop[i].z);
+            shape.moveTo(outerLoop[0].x, outerLoop[0].y);
+            for (let i = 1; i < outerLoop.length; i++) {
+                shape.lineTo(outerLoop[i].x, outerLoop[i].y);
             }
             shape.closePath();
+
+            if (loopData.holes && loopData.holes.length > 0) {
+                loopData.holes.forEach(holeLoop => {
+                    if (holeLoop.length < 3) return;
+                    const hole = new THREE.Path();
+                    hole.moveTo(holeLoop[0].x, holeLoop[0].y);
+                    for (let i = 1; i < holeLoop.length; i++) {
+                        hole.lineTo(holeLoop[i].x, holeLoop[i].y);
+                    }
+                    hole.closePath();
+                    shape.holes.push(hole);
+                });
+            }
 
             const extrudeSettings = { steps: 1, depth: layer.thickness, bevelEnabled: false };
             const geom = new THREE.ExtrudeGeometry(shape, extrudeSettings);
@@ -289,11 +325,20 @@ function showLayerVisual(index) {
     if (child) child.visible = true;
 }
 
-function showAllLayers() {
+function hideLayerVisual(index) {
+    const child = layerVisualGroup.getObjectByName(`layer-${index}`);
+    if (child) child.visible = false;
+}
+
+function hideAllLayerVisuals() {
+    layerVisualGroup.children.forEach(c => { c.visible = false; });
+}
+
+function showAllLayerVisuals() {
     layerVisualGroup.children.forEach(c => { c.visible = true; });
 }
 
-function setClippingPlaneHeight(revealY) {
+function setModelClipping(revealY) {
     if (!currentMesh || !currentMesh.material) return;
     currentMesh.material.clippingPlanes[0] = new THREE.Plane(new THREE.Vector3(0, -1, 0), revealY);
     currentMesh.material.needsUpdate = true;
@@ -301,6 +346,24 @@ function setClippingPlaneHeight(revealY) {
 
 function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, Math.max(16, ms * 1000)));
+}
+
+function checkPause() {
+    return new Promise(resolve => {
+        if (animState.isPaused) {
+            animState.pauseResolve = resolve;
+        } else {
+            resolve();
+        }
+    });
+}
+
+function resolvePause() {
+    if (animState.pauseResolve) {
+        const r = animState.pauseResolve;
+        animState.pauseResolve = null;
+        r();
+    }
 }
 
 function animate() {
@@ -330,10 +393,9 @@ async function startPrint() {
         await loadModel(geom);
     }
 
-    layerVisualGroup.children.forEach(c => { c.visible = false; });
+    hideAllLayerVisuals();
     if (currentMesh) {
-        currentMesh.material.clippingPlanes[0] = new THREE.Plane(new THREE.Vector3(0, -1, 0), -999);
-        currentMesh.material.needsUpdate = true;
+        setModelClipping(-999);
     }
 
     runPrintAnimation();
@@ -341,28 +403,41 @@ async function startPrint() {
 
 async function runPrintAnimation() {
     printState = 'printing';
-    isPaused = false;
+    animState.isPaused = false;
+    animState.stopRequested = false;
+    animState.currentLayer = 0;
+    animState.previewLayer = -1;
     updateStatus('printing');
     updateButtonStates('printing');
+    updateTimelineMax(totalLayers);
+    updateTimelineValue(0);
     animationStartTime = performance.now();
 
-    const modelHeight = currentGeometry ? (currentGeometry.boundingBox.max.y - currentGeometry.boundingBox.min.y) : 0;
+    updatePhaseStatus('lowering');
+    const lowered = await printer.lowerPlatform();
+    if (animState.stopRequested || !lowered) {
+        handleAnimationStop();
+        return;
+    }
 
-    await printer.lowerPlatform();
-
-    if (printState !== 'printing') return;
+    const exposureTime = parseFloat(document.getElementById('exposure-time').value) || 2.5;
 
     for (let layer = 0; layer < totalLayers; layer++) {
-        if (printState !== 'printing' && printState !== 'paused') break;
+        if (animState.stopRequested) break;
 
-        await printer.raiseOneLayer();
+        updatePhaseStatus('lifting');
+        const lifted = await printer.raiseOneLayer();
+        if (animState.stopRequested || !lifted) break;
 
-        if (printState !== 'printing' && printState !== 'paused') break;
+        await checkPause();
+        if (animState.stopRequested) break;
 
+        updatePhaseStatus('exposure');
         const revealY = (layer + 1) * printer.currentLayerHeight;
-        setClippingPlaneHeight(revealY);
+        setModelClipping(revealY);
         showLayerVisual(layer);
 
+        animState.currentLayer = layer + 1;
         currentLayer = layer + 1;
         const progress = Math.round((currentLayer / totalLayers) * 100);
         const elapsed = (performance.now() - animationStartTime) / 1000;
@@ -375,75 +450,171 @@ async function runPrintAnimation() {
 
         updateProgressUI(progress, currentLayer, totalLayers);
         updateRemainingTime(remainingStr);
+        updateTimelineValue(currentLayer);
 
-        if (isPaused) {
-            await pauseAnimation();
-            if (printState !== 'printing') break;
+        const exposureDur = exposureTime / printSpeed;
+        const exposureStart = performance.now();
+        while ((performance.now() - exposureStart) / 1000 < exposureDur) {
+            if (animState.stopRequested) break;
+            if (animState.isPaused) {
+                await checkPause();
+                continue;
+            }
+            await delay(0.05);
         }
 
+        if (animState.stopRequested) break;
+
+        await checkPause();
+        if (animState.stopRequested) break;
+
+        updatePhaseStatus('retraction');
         await delay(perLayerAnimDuration / printSpeed);
 
-        if (isPaused) {
-            await pauseAnimation();
-            if (printState !== 'printing') break;
-        }
+        await checkPause();
+        if (animState.stopRequested) break;
     }
 
-    if (printState === 'printing') {
-        await printer.raiseToTop();
-
-        if (currentMesh) {
-            currentMesh.material.clippingPlanes = [];
-            currentMesh.material.needsUpdate = true;
-        }
-        showAllLayers();
-
-        printState = 'complete';
-        updateStatus('complete');
-        updateButtonStates('complete');
-        updateProgressUI(100, totalLayers, totalLayers);
-        updateRemainingTime('完成');
+    if (animState.stopRequested) {
+        handleAnimationStop();
+        return;
     }
-}
 
-function pauseAnimation() {
-    return new Promise(resolve => {
-        pauseResolve = resolve;
-    });
-}
+    updatePhaseStatus('raising');
+    await printer.raiseToTop();
 
-function pausePrint() {
-    if (printState !== 'printing') return;
-    isPaused = true;
-    updateStatus('paused');
-    updateButtonStates('paused');
-    printState = 'paused';
-}
-
-function resumePrint() {
-    if (printState !== 'paused') return;
-    isPaused = false;
-    updateStatus('printing');
-    updateButtonStates('printing');
-    printState = 'printing';
-    if (pauseResolve) {
-        pauseResolve();
-        pauseResolve = null;
+    if (currentMesh) {
+        currentMesh.material.clippingPlanes = [];
+        currentMesh.material.needsUpdate = true;
     }
+    hideAllLayerVisuals();
+
+    printState = 'complete';
+    animState.currentPhase = 'complete';
+    updateStatus('complete');
+    updateButtonStates('complete');
+    updateProgressUI(100, totalLayers, totalLayers);
+    updateRemainingTime('完成');
+    updatePhaseStatus('');
+    updateTimelineMax(totalLayers);
+    updateTimelineValue(totalLayers);
 }
 
-function stopPrint() {
+function handleAnimationStop() {
     printState = 'idle';
-    isPaused = false;
-    if (pauseResolve) {
-        pauseResolve();
-        pauseResolve = null;
+    animState.isPaused = false;
+    animState.stopRequested = false;
+    if (animState.pauseResolve) {
+        animState.pauseResolve();
+        animState.pauseResolve = null;
     }
     resetPrint();
     updateStatus('idle');
     updateButtonStates('idle');
     updateProgressUI(0, 0, 0);
     updateRemainingTime('--:--');
+    updatePhaseStatus('');
+}
+
+function pausePrint() {
+    if (printState !== 'printing') return;
+    animState.isPaused = true;
+    animState.currentPhase = 'paused';
+    updateStatus('paused');
+    updateButtonStates('paused');
+    updatePhaseStatus('paused');
+    printState = 'paused';
+    updateTimelineMax(currentLayer);
+    updateTimelineValue(currentLayer);
+}
+
+function resumePrint() {
+    if (printState !== 'paused') return;
+    animState.isPaused = false;
+    animState.previewLayer = -1;
+    updateStatus('printing');
+    updateButtonStates('printing');
+    printState = 'printing';
+    setModelClipping(currentLayer * printer.currentLayerHeight);
+    hideAllLayerVisuals();
+    for (let i = 0; i < currentLayer; i++) {
+        showLayerVisual(i);
+    }
+    updateTimelineValue(currentLayer);
+    resolvePause();
+}
+
+function stopPrint() {
+    animState.stopRequested = true;
+    animState.isPaused = false;
+    resolvePause();
+    printState = 'idle';
+    resetPrint();
+    updateStatus('idle');
+    updateButtonStates('idle');
+    updateProgressUI(0, 0, 0);
+    updateRemainingTime('--:--');
+    updatePhaseStatus('');
+}
+
+function previewLayer(layerIndex) {
+    if (printState !== 'paused') return;
+    const idx = Math.max(0, Math.min(currentLayer, layerIndex));
+    animState.previewLayer = idx;
+
+    const revealY = idx * printer.currentLayerHeight;
+    setModelClipping(revealY);
+
+    hideAllLayerVisuals();
+    for (let i = 0; i < idx; i++) {
+        showLayerVisual(i);
+    }
+
+    const platformY = printer.resinSurfaceY + idx * printer.currentLayerHeight;
+    printer.platformGroup.position.y = Math.min(platformY, printer.bottomPlatformY + 6);
+    printer.currentPlatformY = printer.platformGroup.position.y;
+
+    const elapsed = (performance.now() - animationStartTime) / 1000;
+    const remaining = totalLayers > 0 && idx > 0
+        ? Math.max(0, (elapsed / currentLayer) * (totalLayers - idx))
+        : 0;
+    const remainingStr = remaining < 60
+        ? `${Math.round(remaining)}s`
+        : `${Math.floor(remaining / 60)}m ${Math.round(remaining % 60)}s`;
+
+    const progress = totalLayers > 0 ? Math.round((idx / totalLayers) * 100) : 0;
+    updateProgressUI(progress, idx, totalLayers);
+    updateRemainingTime(remainingStr);
+    updateStatus('paused', `预览第 ${idx} 层（共 ${currentLayer} 层已打印）`);
+}
+
+function restoreFromPreview() {
+    if (animState.previewLayer < 0) return;
+    animState.previewLayer = -1;
+
+    setModelClipping(currentLayer * printer.currentLayerHeight);
+    hideAllLayerVisuals();
+    for (let i = 0; i < currentLayer; i++) {
+        showLayerVisual(i);
+    }
+
+    const platformY = currentLayer * printer.currentLayerHeight;
+    printer.platformGroup.position.y = Math.min(printer.resinSurfaceY + platformY, printer.bottomPlatformY + 6);
+    printer.currentPlatformY = printer.platformGroup.position.y;
+
+    const progress = totalLayers > 0 ? Math.round((currentLayer / totalLayers) * 100) : 0;
+    const elapsed = (performance.now() - animationStartTime) / 1000;
+    const remaining = totalLayers > 0 && currentLayer > 0
+        ? Math.max(0, (elapsed / currentLayer) * (totalLayers - currentLayer))
+        : 0;
+    const remainingStr = remaining < 60
+        ? `${Math.round(remaining)}s`
+        : `${Math.floor(remaining / 60)}m ${Math.round(remaining % 60)}s`;
+
+    updateProgressUI(progress, currentLayer, totalLayers);
+    updateRemainingTime(remainingStr);
+    updateStatus('paused');
+    updateTimelineValue(currentLayer);
 }
 
 async function handleFileUpload(file) {
@@ -463,7 +634,6 @@ async function handleFileUpload(file) {
         await loadModel(geometry);
         updateStatus('idle', `已加载: ${file.name}`);
     } catch (err) {
-        console.error('STL load error:', err);
         updateStatus('error', 'STL 加载失败');
     }
 }
@@ -479,12 +649,16 @@ async function handlePresetSelect(presetName) {
     updateStatus('idle');
 }
 
-function handleGifExport() {
+function handleExport(format) {
     if (printState !== 'complete') {
-        alert('请等待打印完成后再导出 GIF');
+        alert('请等待打印完成后再导出');
         return;
     }
-    exportGIF(renderer, camera, scene, layerVisualGroup, totalLayers, currentLayer, setGifProgress);
+    if (format === 'gif') {
+        exportGIF(renderer, camera, scene, layerVisualGroup, totalLayers, setExportProgress);
+    } else if (format === 'png') {
+        exportPNGFrames(renderer, camera, scene, layerVisualGroup, totalLayers, setExportProgress);
+    }
 }
 
 initUI({
@@ -505,7 +679,9 @@ initUI({
     },
     onPresetSelect: handlePresetSelect,
     onFileUpload: handleFileUpload,
-    onGifExport: handleGifExport,
+    onExport: handleExport,
+    onTimelineChange: previewLayer,
+    onTimelineRestore: restoreFromPreview,
 });
 
 async function init() {

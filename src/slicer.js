@@ -39,10 +39,13 @@ export function sliceModel(geometry, layerHeight) {
         }
 
         const loops = connectSegmentsIntoLoops(segments);
+        const classified = classifyLoops(loops);
         layers.push({
             height: planeY,
             thickness: layerHeight,
-            loops,
+            loops: classified.loops,
+            outerLoops: classified.outerLoops,
+            holes: classified.holes,
         });
     }
 
@@ -167,6 +170,83 @@ function connectSegmentsIntoLoops(segments) {
     return loops;
 }
 
+function signedAreaXZ(loop) {
+    if (loop.length < 3) return 0;
+    let area = 0;
+    for (let i = 0; i < loop.length - 1; i++) {
+        const j = i + 1;
+        area += loop[i].x * loop[j].y - loop[j].x * loop[i].y;
+    }
+    return area / 2;
+}
+
+function pointInLoopXZ(point, loop) {
+    let inside = false;
+    const n = loop.length;
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+        const xi = loop[i].x, zi = loop[i].y;
+        const xj = loop[j].x, zj = loop[j].y;
+        if ((zi > point.y) !== (zj > point.y) &&
+            point.x < (xj - xi) * (point.y - zi) / (zj - zi) + xi) {
+            inside = !inside;
+        }
+    }
+    return inside;
+}
+
+function classifyLoops(loops) {
+    if (loops.length === 0) return { loops: [], outerLoops: [], holes: [] };
+
+    const classified = loops.map((loop, idx) => {
+        const area = signedAreaXZ(loop);
+        return {
+            loop,
+            index: idx,
+            signedArea: area,
+            isOuter: area > 0,
+        };
+    });
+
+    const outerLoops = classified.filter(c => c.isOuter);
+    const holeLoops = classified.filter(c => !c.isOuter);
+
+    const holeAssignments = new Map();
+    outerLoops.forEach(outer => {
+        holeAssignments.set(outer.index, []);
+    });
+
+    holeLoops.forEach(hole => {
+        let bestOuter = null;
+        let bestArea = Infinity;
+
+        for (const outer of outerLoops) {
+            if (pointInLoopXZ(hole.loop[0], outer.loop)) {
+                const outerArea = Math.abs(outer.signedArea);
+                if (outerArea < bestArea) {
+                    bestArea = outerArea;
+                    bestOuter = outer;
+                }
+            }
+        }
+
+        if (bestOuter) {
+            holeAssignments.get(bestOuter.index).push(hole);
+        }
+    });
+
+    const resultLoops = outerLoops.map(outer => ({
+        outer: outer.loop,
+        holes: (holeAssignments.get(outer.index) || []).map(h => h.loop),
+        isOuter: true,
+    }));
+
+    return {
+        loops: resultLoops,
+        outerLoops: outerLoops.map(o => o.loop),
+        holes: holeLoops.map(h => h.loop),
+    };
+}
+
 export function generateSupports(geometry, layerHeight) {
     const positions = geometry.getAttribute('position');
     const index = geometry.index;
@@ -174,65 +254,89 @@ export function generateSupports(geometry, layerHeight) {
 
     const supports = [];
     const supportSet = new Set();
-    const gridSize = 2.0;
-    const overhangAngle = Math.PI / 4;
+    const gridSize = 1.5;
+    const overhangThreshold = -0.35;
 
     const triangleCount = index ? index.count / 3 : positions.count / 3;
+    const overhangTriangles = [];
 
-    const downVector = new THREE.Vector3(0, -1, 0);
-
-    const rays = [];
-    for (let x = bbox.min.x; x <= bbox.max.x; x += gridSize * 0.5) {
-        for (let z = bbox.min.z; z <= bbox.max.z; z += gridSize * 0.5) {
-            rays.push(new THREE.Vector3(x, bbox.max.y, z));
+    for (let t = 0; t < triangleCount; t++) {
+        let i0, i1, i2;
+        if (index) {
+            i0 = index.getX(t * 3);
+            i1 = index.getX(t * 3 + 1);
+            i2 = index.getX(t * 3 + 2);
+        } else {
+            i0 = t * 3;
+            i1 = t * 3 + 1;
+            i2 = t * 3 + 2;
         }
-    }
 
-    const samplePoints = [];
-    for (const origin of rays) {
-        for (const offset of [
-            [0, 0], [gridSize * 0.25, 0], [-gridSize * 0.25, 0],
-            [0, gridSize * 0.25], [0, -gridSize * 0.25]
-        ]) {
-            samplePoints.push(
-                new THREE.Vector3(origin.x + offset[0], origin.y, origin.z + offset[1])
+        const a = new THREE.Vector3(positions.getX(i0), positions.getY(i0), positions.getZ(i0));
+        const b = new THREE.Vector3(positions.getX(i1), positions.getY(i1), positions.getZ(i1));
+        const c = new THREE.Vector3(positions.getX(i2), positions.getY(i2), positions.getZ(i2));
+
+        const ab = new THREE.Vector3().subVectors(b, a);
+        const ac = new THREE.Vector3().subVectors(c, a);
+        const normal = new THREE.Vector3().crossVectors(ab, ac).normalize();
+
+        if (normal.y < overhangThreshold) {
+            const centroid = new THREE.Vector3(
+                (a.x + b.x + c.x) / 3,
+                (a.y + b.y + c.y) / 3,
+                (a.z + b.z + c.z) / 3
             );
-        }
-    }
 
-    const raycaster = new THREE.Raycaster();
-    const geomMesh = new THREE.Mesh(geometry);
-
-    for (const origin of samplePoints) {
-        raycaster.set(origin, new THREE.Vector3(0, -1, 0));
-        const hits = raycaster.intersectObject(geomMesh, false);
-
-        if (hits.length > 0) {
-            const hit = hits[0];
-            if (hit.face && hit.face.normal) {
-                const normal = hit.face.normal.clone();
-                const angleFromDown = Math.acos(Math.abs(normal.dot(downVector)));
-
-                if (angleFromDown > overhangAngle) {
-                    const key = `${Math.round(hit.point.x / gridSize)},${Math.round(hit.point.z / gridSize)}`;
-                    if (!supportSet.has(key)) {
-                        supportSet.add(key);
-                        const bottomY = bbox.min.y - 1;
-                        const height = hit.point.y - bottomY;
-
-                        if (height > layerHeight * 2) {
-                            const support = {
-                                top: hit.point.clone(),
-                                bottom: new THREE.Vector3(hit.point.x, bottomY, hit.point.z),
-                                radiusTop: layerHeight * 0.8,
-                                radiusBottom: layerHeight * 1.5,
-                            };
-                            supports.push(support);
-                        }
-                    }
-                }
+            if (centroid.y > bbox.min.y + layerHeight * 3) {
+                overhangTriangles.push({
+                    centroid,
+                    normal,
+                    area: ab.clone().cross(ac).length() / 2,
+                });
             }
         }
+    }
+
+    overhangTriangles.sort((a, b) => a.centroid.y - b.centroid.y);
+
+    const bottomY = bbox.min.y;
+    const maxHeight = bbox.max.y - bottomY;
+
+    for (const tri of overhangTriangles) {
+        const gridX = Math.round(tri.centroid.x / gridSize);
+        const gridZ = Math.round(tri.centroid.z / gridSize);
+        const key = `${gridX},${gridZ}`;
+
+        if (supportSet.has(key)) continue;
+
+        if (supportSet.size > 0) {
+            let tooClose = false;
+            for (const existingKey of supportSet) {
+                const [ex, ez] = existingKey.split(',').map(Number);
+                const dx = gridX - ex;
+                const dz = gridZ - ez;
+                if (Math.sqrt(dx * dx + dz * dz) < 0.8) {
+                    tooClose = true;
+                    break;
+                }
+            }
+            if (tooClose) continue;
+        }
+
+        supportSet.add(key);
+
+        const height = tri.centroid.y - bottomY;
+        if (height < layerHeight * 2) continue;
+
+        const tipRadius = layerHeight * 0.6;
+        const baseRadius = Math.min(layerHeight * 1.8, height * 0.08);
+
+        supports.push({
+            top: tri.centroid.clone(),
+            bottom: new THREE.Vector3(tri.centroid.x, bottomY, tri.centroid.z),
+            radiusTop: tipRadius,
+            radiusBottom: baseRadius,
+        });
     }
 
     return supports;

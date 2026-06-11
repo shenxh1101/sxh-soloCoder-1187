@@ -1,16 +1,12 @@
 export function initUI(callbacks) {
     const {
         onStart, onPause, onStop, onReset,
-        onSpeedChange, onPresetSelect, onFileUpload, onGifExport
+        onSpeedChange, onPresetSelect, onFileUpload, onExport,
+        onTimelineChange, onTimelineRestore,
     } = callbacks;
 
     document.getElementById('btn-start').addEventListener('click', () => {
-        const btn = document.getElementById('btn-start');
-        if (btn.textContent.includes('继续')) {
-            onStart();
-        } else {
-            onStart();
-        }
+        onStart();
     });
 
     document.getElementById('btn-pause').addEventListener('click', () => onPause());
@@ -53,7 +49,25 @@ export function initUI(callbacks) {
         if (file) onFileUpload(file);
     });
 
-    document.getElementById('btn-export-gif').addEventListener('click', () => onGifExport());
+    const exportFormat = document.getElementById('export-format');
+    document.getElementById('btn-export').addEventListener('click', () => {
+        onExport(exportFormat.value);
+    });
+
+    const timelineSlider = document.getElementById('timeline-slider');
+    let isDragging = false;
+
+    timelineSlider.addEventListener('input', (e) => {
+        const val = parseInt(e.target.value);
+        onTimelineChange(val);
+        isDragging = true;
+    });
+
+    timelineSlider.addEventListener('change', (e) => {
+        isDragging = false;
+        const val = parseInt(e.target.value);
+        onTimelineChange(val);
+    });
 
     document.getElementById('layer-height').addEventListener('change', () => onReset());
     document.getElementById('exposure-time').addEventListener('change', () => onReset());
@@ -78,10 +92,50 @@ export function updateStatus(status, customText) {
             case 'idle': text.textContent = '就绪'; break;
             case 'printing': text.textContent = '打印中...'; break;
             case 'paused': text.textContent = '已暂停'; break;
-            case 'complete': text.textContent = '打印完成 ✓'; break;
+            case 'complete': text.textContent = '打印完成'; break;
             case 'error': text.textContent = '错误'; break;
             default: text.textContent = status;
         }
+    }
+}
+
+export function updatePhaseStatus(phase) {
+    const el = document.getElementById('phase-status');
+    if (!el) return;
+    switch (phase) {
+        case 'lowering': el.textContent = '⬇ 平台下降中'; break;
+        case 'exposure': el.textContent = '🔆 UV曝光中'; break;
+        case 'lifting': el.textContent = '⬆ 平台抬升中'; break;
+        case 'retraction': el.textContent = '↻ 回落等待中'; break;
+        case 'raising': el.textContent = '⬆ 最终抬升中'; break;
+        case 'paused': el.textContent = '⏸ 已暂停'; break;
+        default: el.textContent = ''; break;
+    }
+}
+
+export function updateTimelineMax(max) {
+    const slider = document.getElementById('timeline-slider');
+    const label = document.getElementById('timeline-label');
+    if (slider) {
+        slider.max = max;
+        slider.value = max;
+    }
+    if (label && max > 0) {
+        label.textContent = `第 ${max} 层（共 ${max} 层）`;
+    } else if (label) {
+        label.textContent = '暂无打印数据';
+    }
+}
+
+export function updateTimelineValue(value) {
+    const slider = document.getElementById('timeline-slider');
+    const label = document.getElementById('timeline-label');
+    if (slider) {
+        slider.value = value;
+    }
+    if (label) {
+        const max = slider ? parseInt(slider.max) : 0;
+        label.textContent = `第 ${value} 层（共 ${max} 层）`;
     }
 }
 
@@ -90,8 +144,10 @@ export function updateButtonStates(state) {
     const btnPause = document.getElementById('btn-pause');
     const btnStop = document.getElementById('btn-stop');
     const btnReset = document.getElementById('btn-reset');
-    const btnExportGif = document.getElementById('btn-export-gif');
+    const btnExport = document.getElementById('btn-export');
     const speedSlider = document.getElementById('speed-slider');
+    const timelineSection = document.getElementById('timeline-section');
+    const timelineSlider = document.getElementById('timeline-slider');
 
     switch (state) {
         case 'idle':
@@ -102,8 +158,10 @@ export function updateButtonStates(state) {
             btnPause.textContent = '⏸ 暂停';
             btnStop.disabled = true;
             btnReset.disabled = true;
-            btnExportGif.disabled = true;
+            btnExport.disabled = true;
             speedSlider.disabled = false;
+            if (timelineSection) timelineSection.style.display = 'none';
+            if (timelineSlider) timelineSlider.disabled = true;
             break;
         case 'ready':
             btnStart.textContent = '▶ 开始打印';
@@ -113,8 +171,10 @@ export function updateButtonStates(state) {
             btnPause.textContent = '⏸ 暂停';
             btnStop.disabled = true;
             btnReset.disabled = false;
-            btnExportGif.disabled = true;
+            btnExport.disabled = true;
             speedSlider.disabled = false;
+            if (timelineSection) timelineSection.style.display = 'none';
+            if (timelineSlider) timelineSlider.disabled = true;
             break;
         case 'printing':
             btnStart.textContent = '▶ 开始打印';
@@ -124,8 +184,12 @@ export function updateButtonStates(state) {
             btnPause.textContent = '⏸ 暂停';
             btnStop.disabled = true;
             btnReset.disabled = false;
-            btnExportGif.disabled = true;
+            btnExport.disabled = true;
             speedSlider.disabled = false;
+            if (timelineSection) timelineSection.style.display = 'block';
+            if (timelineSlider) {
+                timelineSlider.disabled = true;
+            }
             break;
         case 'paused':
             btnStart.textContent = '▶ 继续';
@@ -135,8 +199,12 @@ export function updateButtonStates(state) {
             btnPause.textContent = '⏸ 暂停';
             btnStop.disabled = false;
             btnReset.disabled = false;
-            btnExportGif.disabled = true;
+            btnExport.disabled = true;
             speedSlider.disabled = false;
+            if (timelineSection) timelineSection.style.display = 'block';
+            if (timelineSlider) {
+                timelineSlider.disabled = false;
+            }
             break;
         case 'complete':
             btnStart.disabled = true;
@@ -144,8 +212,12 @@ export function updateButtonStates(state) {
             btnPause.disabled = true;
             btnStop.disabled = true;
             btnReset.disabled = false;
-            btnExportGif.disabled = false;
+            btnExport.disabled = false;
             speedSlider.disabled = false;
+            if (timelineSection) timelineSection.style.display = 'block';
+            if (timelineSlider) {
+                timelineSlider.disabled = false;
+            }
             break;
     }
 }
@@ -154,15 +226,22 @@ export function updateRemainingTime(timeStr) {
     document.getElementById('stat-time').textContent = timeStr;
 }
 
-export function setGifProgress(percent) {
-    const container = document.getElementById('gif-progress');
-    const bar = document.getElementById('gif-bar-inner');
+export function setExportProgress(percent, statusText) {
+    const container = document.getElementById('export-progress');
+    const bar = document.getElementById('export-bar-inner');
+    const text = document.getElementById('export-progress-text');
+    if (!container) return;
     container.style.display = 'block';
     bar.style.width = `${percent}%`;
+    if (text && statusText) {
+        text.textContent = statusText;
+    } else if (text) {
+        text.textContent = `正在生成... ${percent}%`;
+    }
     if (percent >= 100) {
         setTimeout(() => {
             container.style.display = 'none';
             bar.style.width = '0%';
-        }, 2000);
+        }, 3000);
     }
 }

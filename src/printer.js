@@ -196,6 +196,8 @@ export function createPrinterModel() {
     const bottomPlatformY = 3;
     const resinSurfaceY = -vatHeight / 2 + 3;
 
+    let animStateRef = null;
+
     return {
         group,
         platformGroup,
@@ -209,6 +211,10 @@ export function createPrinterModel() {
         currentPlatformY: 3,
         modelMin: null,
         modelMax: null,
+
+        setAnimState(state) {
+            animStateRef = state;
+        },
 
         setModelBounds(min, max) {
             this.modelMin = min.clone();
@@ -225,28 +231,51 @@ export function createPrinterModel() {
 
         async lowerPlatform() {
             const targetY = this.resinSurfaceY - 1;
-            await this._animatePlatform(targetY, 0.8);
+            return this._animatePlatform(targetY, 0.8);
         },
 
         async raiseOneLayer() {
             const targetY = this.platformGroup.position.y + this.currentLayerHeight;
-            await this._animatePlatform(targetY, 0.2);
+            return this._animatePlatform(targetY, 0.2);
         },
 
         async raiseToTop() {
             const targetY = this.bottomPlatformY + 6;
-            await this._animatePlatform(targetY, 0.8);
+            return this._animatePlatform(targetY, 0.8);
         },
 
         async _animatePlatform(targetY, duration) {
             const self = this;
             const startY = self.platformGroup.position.y;
-            const startTime = performance.now();
             const durMs = duration * 1000;
 
             return new Promise(resolve => {
-                const step = () => {
-                    const elapsed = performance.now() - startTime;
+                let resolved = false;
+                let pausedTime = null;
+
+                const doStep = (effectiveStartTime) => {
+                    if (resolved) return;
+
+                    if (animStateRef && animStateRef.stopRequested) {
+                        resolved = true;
+                        resolve(false);
+                        return;
+                    }
+
+                    if (animStateRef && animStateRef.isPaused) {
+                        if (pausedTime === null) {
+                            pausedTime = performance.now();
+                        }
+                        animStateRef.pauseResolve = () => {
+                            animStateRef.pauseResolve = null;
+                            const pauseDuration = performance.now() - pausedTime;
+                            pausedTime = null;
+                            doStep(effectiveStartTime + pauseDuration);
+                        };
+                        return;
+                    }
+
+                    const elapsed = performance.now() - effectiveStartTime;
                     const t = Math.min(elapsed / durMs, 1.0);
                     const eased = 1 - Math.pow(1 - t, 3);
                     const y = startY + (targetY - startY) * eased;
@@ -254,14 +283,16 @@ export function createPrinterModel() {
                     self.currentPlatformY = y;
 
                     if (t < 1.0) {
-                        requestAnimationFrame(step);
+                        requestAnimationFrame(() => doStep(effectiveStartTime));
                     } else {
                         self.platformGroup.position.y = targetY;
                         self.currentPlatformY = targetY;
-                        resolve();
+                        resolved = true;
+                        resolve(true);
                     }
                 };
-                requestAnimationFrame(step);
+
+                requestAnimationFrame(() => doStep(performance.now()));
             });
         },
 
